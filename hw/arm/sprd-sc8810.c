@@ -8,6 +8,7 @@
 #include "sysemu/sysemu.h"
 #include "hw/boards.h"
 #include "hw/char/serial.h"
+#include "hw/char/pl011.h"
 #include "hw/qdev-properties.h"
 #include "hw/arm/sprd-sc8810.h"
 
@@ -17,6 +18,8 @@ static void sc8810_init(Object *obj)
 
     object_initialize_child(obj, "cpu", &s->cpu,
                             ARM_CPU_TYPE_NAME("cortex-a8"));
+
+    pl011_create(memmap[UART_0].base, 0, serial_hd(0));
 }
 
 static void sc8810_realize(DeviceState *dev, Error **errp)
