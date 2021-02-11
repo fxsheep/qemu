@@ -20,6 +20,8 @@ static void s7568_init(MachineState *machine)
     SC8810State *sc8810;
     Error *err = NULL;
 
+    MemoryRegion *sysmem = get_system_memory(); 
+
     /* Maybe it's possible to load custom internal ROM with this option */
     if (machine->firmware) {
         error_report("BIOS not supported for this machine at present");
@@ -40,6 +42,8 @@ static void s7568_init(MachineState *machine)
         error_reportf_err(err, "Couldn't realize Spreadtrum SC8810: ");
         exit(1);
     }
+
+    memory_region_add_subregion(sysmem, memmap[SDRAM_0].base, machine->ram);
 }
 
 static void s7568_machine_init(MachineClass *mc)
