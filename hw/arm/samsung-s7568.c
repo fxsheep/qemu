@@ -15,6 +15,11 @@
 #include "hw/qdev-properties.h"
 #include "hw/arm/sprd-sc8810.h"
 
+static struct arm_boot_info s7568_binfo = {
+    .loader_start = SDRAM_0,
+    .board_id = 0x7DD,
+};
+
 static void s7568_init(MachineState *machine)
 {
     SC8810State *sc8810;
@@ -44,6 +49,9 @@ static void s7568_init(MachineState *machine)
     }
 
     memory_region_add_subregion(sysmem, memmap[SDRAM_0].base, machine->ram);
+
+    s7568_binfo.ram_size = machine->ram_size;
+    arm_load_kernel(&sc8810->cpu, machine, &s7568_binfo);
 }
 
 static void s7568_machine_init(MachineClass *mc)
