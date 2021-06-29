@@ -55,7 +55,8 @@
 # <- { "return": {} }
 #
 ##
-{ 'command': 'netdev_add', 'data': 'Netdev', 'boxed': true }
+{ 'command': 'netdev_add', 'data': 'Netdev', 'boxed': true,
+  'allow-preconfig': true }
 
 ##
 # @netdev_del:
@@ -75,7 +76,8 @@
 # <- { "return": {} }
 #
 ##
-{ 'command': 'netdev_del', 'data': {'id': 'str'} }
+{ 'command': 'netdev_del', 'data': {'id': 'str'},
+  'allow-preconfig': true }
 
 ##
 # @NetLegacyNicOptions:
@@ -491,26 +493,6 @@
     'netmap':   'NetdevNetmapOptions',
     'vhost-user': 'NetdevVhostUserOptions',
     'vhost-vdpa': 'NetdevVhostVDPAOptions' } }
-
-##
-# @NetFilterDirection:
-#
-# Indicates whether a netfilter is attached to a netdev's transmit queue or
-# receive queue or both.
-#
-# @all: the filter is attached both to the receive and the transmit
-#       queue of the netdev (default).
-#
-# @rx: the filter is attached to the receive queue of the netdev,
-#      where it will receive packets sent to the netdev.
-#
-# @tx: the filter is attached to the transmit queue of the netdev,
-#      where it will receive packets sent by the netdev.
-#
-# Since: 2.5
-##
-{ 'enum': 'NetFilterDirection',
-  'data': [ 'all', 'rx', 'tx' ] }
 
 ##
 # @RxState:

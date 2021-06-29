@@ -24,17 +24,16 @@
 #include "qemu/main-loop.h"
 #include "qapi/error.h"
 #include "hw/sysbus.h"
-#include "exec/address-spaces.h"
 #include "intel_iommu_internal.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/qdev-properties.h"
 #include "hw/i386/pc.h"
 #include "hw/i386/apic-msidef.h"
-#include "hw/boards.h"
 #include "hw/i386/x86-iommu.h"
 #include "hw/pci-host/q35.h"
 #include "sysemu/kvm.h"
+#include "sysemu/dma.h"
 #include "sysemu/sysemu.h"
 #include "hw/i386/apic_internal.h"
 #include "kvm/kvm_i386.h"
@@ -1884,6 +1883,8 @@ static void vtd_context_device_invalidate(IntelIOMMUState *s,
     case 3:
         mask = 7;   /* Mask bit 2:0 in the SID field */
         break;
+    default:
+        g_assert_not_reached();
     }
     mask = ~mask;
 
@@ -3453,24 +3454,6 @@ VTDAddressSpace *vtd_find_add_as(IntelIOMMUState *s, PCIBus *bus, int devfn)
     return vtd_dev_as;
 }
 
-static uint64_t get_naturally_aligned_size(uint64_t start,
-                                           uint64_t size, int gaw)
-{
-    uint64_t max_mask = 1ULL << gaw;
-    uint64_t alignment = start ? start & -start : max_mask;
-
-    alignment = MIN(alignment, max_mask);
-    size = MIN(size, max_mask);
-
-    if (alignment <= size) {
-        /* Increase the alignment of start */
-        return alignment;
-    } else {
-        /* Find the largest page mask from size */
-        return 1ULL << (63 - clz64(size));
-    }
-}
-
 /* Unmap the whole range in the notifier's scope. */
 static void vtd_address_space_unmap(VTDAddressSpace *as, IOMMUNotifier *n)
 {
@@ -3499,13 +3482,14 @@ static void vtd_address_space_unmap(VTDAddressSpace *as, IOMMUNotifier *n)
 
     while (remain >= VTD_PAGE_SIZE) {
         IOMMUTLBEvent event;
-        uint64_t mask = get_naturally_aligned_size(start, remain, s->aw_bits);
+        uint64_t mask = dma_aligned_pow2_mask(start, end, s->aw_bits);
+        uint64_t size = mask + 1;
 
-        assert(mask);
+        assert(size);
 
         event.type = IOMMU_NOTIFIER_UNMAP;
         event.entry.iova = start;
-        event.entry.addr_mask = mask - 1;
+        event.entry.addr_mask = mask;
         event.entry.target_as = &address_space_memory;
         event.entry.perm = IOMMU_NONE;
         /* This field is meaningless for unmap */
@@ -3513,8 +3497,8 @@ static void vtd_address_space_unmap(VTDAddressSpace *as, IOMMUNotifier *n)
 
         memory_region_notify_iommu_one(n, &event);
 
-        start += mask;
-        remain -= mask;
+        start += size;
+        remain -= size;
     }
 
     assert(!remain);

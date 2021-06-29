@@ -49,6 +49,8 @@ static char *opt_render_node;
 static gboolean opt_virgl;
 
 static void vg_handle_ctrl(VuDev *dev, int qidx);
+static void vg_cleanup_mapping(VuGpu *g,
+                               struct virtio_gpu_simple_resource *res);
 
 static const char *
 vg_cmd_to_string(int cmd)
@@ -348,6 +350,7 @@ vg_resource_create_2d(VuGpu *g,
     if (!res->image) {
         g_critical("%s: resource creation failed %d %d %d",
                    __func__, c2d.resource_id, c2d.width, c2d.height);
+        vugbm_buffer_destroy(&res->buffer);
         g_free(res);
         cmd->error = VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY;
         return;
@@ -399,6 +402,7 @@ vg_resource_destroy(VuGpu *g,
     }
 
     vugbm_buffer_destroy(&res->buffer);
+    vg_cleanup_mapping(g, res);
     pixman_image_unref(res->image);
     QTAILQ_REMOVE(&g->reslist, res, next);
     g_free(res);
@@ -488,6 +492,11 @@ vg_resource_attach_backing(VuGpu *g,
         return;
     }
 
+    if (res->iov) {
+        cmd->error = VIRTIO_GPU_RESP_ERR_UNSPEC;
+        return;
+    }
+
     ret = vg_create_mapping_iov(g, &ab, cmd, &res->iov);
     if (ret != 0) {
         cmd->error = VIRTIO_GPU_RESP_ERR_UNSPEC;
@@ -495,6 +504,22 @@ vg_resource_attach_backing(VuGpu *g,
     }
 
     res->iov_cnt = ab.nr_entries;
+}
+
+/* Though currently only free iov, maybe later will do more work. */
+void vg_cleanup_mapping_iov(VuGpu *g,
+                            struct iovec *iov, uint32_t count)
+{
+    g_free(iov);
+}
+
+static void
+vg_cleanup_mapping(VuGpu *g,
+                   struct virtio_gpu_simple_resource *res)
+{
+    vg_cleanup_mapping_iov(g, res->iov, res->iov_cnt);
+    res->iov = NULL;
+    res->iov_cnt = 0;
 }
 
 static void
@@ -515,9 +540,7 @@ vg_resource_detach_backing(VuGpu *g,
         return;
     }
 
-    g_free(res->iov);
-    res->iov = NULL;
-    res->iov_cnt = 0;
+    vg_cleanup_mapping(g, res);
 }
 
 static void
@@ -892,11 +915,8 @@ update_cursor_data_simple(VuGpu *g, uint32_t resource_id, gpointer data)
 static void
 vg_process_cursor_cmd(VuGpu *g, struct virtio_gpu_update_cursor *cursor)
 {
-    bool move = cursor->hdr.type != VIRTIO_GPU_CMD_MOVE_CURSOR;
-
-    g_debug("%s move:%d\n", G_STRFUNC, move);
-
-    if (move) {
+    switch (cursor->hdr.type) {
+    case VIRTIO_GPU_CMD_MOVE_CURSOR: {
         VhostUserGpuMsg msg = {
             .request = cursor->resource_id ?
                 VHOST_USER_GPU_CURSOR_POS : VHOST_USER_GPU_CURSOR_POS_HIDE,
@@ -907,8 +927,11 @@ vg_process_cursor_cmd(VuGpu *g, struct virtio_gpu_update_cursor *cursor)
                 .y = cursor->pos.y,
             }
         };
+        g_debug("%s: move", G_STRFUNC);
         vg_send_msg(g, &msg, -1);
-    } else {
+        break;
+    }
+    case VIRTIO_GPU_CMD_UPDATE_CURSOR: {
         VhostUserGpuMsg msg = {
             .request = VHOST_USER_GPU_CURSOR_UPDATE,
             .size = sizeof(VhostUserGpuCursorUpdate),
@@ -922,6 +945,7 @@ vg_process_cursor_cmd(VuGpu *g, struct virtio_gpu_update_cursor *cursor)
                 .hot_y = cursor->hot_y,
             }
         };
+        g_debug("%s: update", G_STRFUNC);
         if (g->virgl) {
             vg_virgl_update_cursor_data(g, cursor->resource_id,
                                         msg.payload.cursor_update.data);
@@ -930,6 +954,11 @@ vg_process_cursor_cmd(VuGpu *g, struct virtio_gpu_update_cursor *cursor)
                                       msg.payload.cursor_update.data);
         }
         vg_send_msg(g, &msg, -1);
+        break;
+    }
+    default:
+        g_debug("%s: unknown cmd %d", G_STRFUNC, cursor->hdr.type);
+        break;
     }
 }
 
@@ -1186,11 +1215,7 @@ main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    if (g.drm_rnode_fd >= 0) {
-        if (!vugbm_device_init(&g.gdev, g.drm_rnode_fd)) {
-            g_warning("Failed to init DRM device, using fallback path");
-        }
-    }
+    vugbm_device_init(&g.gdev, g.drm_rnode_fd);
 
     if ((!!opt_socket_path + (opt_fdnum != -1)) != 1) {
         g_printerr("Please specify either --fd or --socket-path\n");

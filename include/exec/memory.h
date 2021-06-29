@@ -33,11 +33,11 @@
 #define MAX_PHYS_ADDR_SPACE_BITS 62
 #define MAX_PHYS_ADDR            (((hwaddr)1 << MAX_PHYS_ADDR_SPACE_BITS) - 1)
 
-#define TYPE_MEMORY_REGION "qemu:memory-region"
+#define TYPE_MEMORY_REGION "memory-region"
 DECLARE_INSTANCE_CHECKER(MemoryRegion, MEMORY_REGION,
                          TYPE_MEMORY_REGION)
 
-#define TYPE_IOMMU_MEMORY_REGION "qemu:iommu-memory-region"
+#define TYPE_IOMMU_MEMORY_REGION "iommu-memory-region"
 typedef struct IOMMUMemoryRegionClass IOMMUMemoryRegionClass;
 DECLARE_OBJ_CHECKERS(IOMMUMemoryRegion, IOMMUMemoryRegionClass,
                      IOMMU_MEMORY_REGION, TYPE_IOMMU_MEMORY_REGION)
@@ -131,7 +131,7 @@ typedef struct IOMMUTLBEvent {
 #define RAM_SHARED     (1 << 1)
 
 /* Only a portion of RAM (used_length) is actually used, and migrated.
- * This used_length size can change across reboots.
+ * Resizing RAM while migrating can result in the migration being canceled.
  */
 #define RAM_RESIZEABLE (1 << 2)
 
@@ -154,6 +154,13 @@ typedef struct IOMMUTLBEvent {
  * Implies ram_state->ram_wt_enabled.
  */
 #define RAM_UF_WRITEPROTECT (1 << 6)
+
+/*
+ * RAM is mmap-ed with MAP_NORESERVE. When set, reserving swap space (or huge
+ * pages if applicable) is skipped: will bail out if not supported. When not
+ * set, the OS will do the reservation, if supported for the memory type.
+ */
+#define RAM_NORESERVE (1 << 7)
 
 static inline void iommu_notifier_init(IOMMUNotifier *n, IOMMUNotify fn,
                                        IOMMUNotifierFlag flags,
@@ -571,7 +578,7 @@ struct MemoryListener {
      * @log_start:
      *
      * Called during an address space update transaction, after
-     * one of #MemoryListener.region_add(),#MemoryListener.region_del() or
+     * one of #MemoryListener.region_add(), #MemoryListener.region_del() or
      * #MemoryListener.region_nop(), if dirty memory logging clients have
      * become active since the last transaction.
      *
@@ -615,6 +622,18 @@ struct MemoryListener {
      * @section: The #MemoryRegionSection.
      */
     void (*log_sync)(MemoryListener *listener, MemoryRegionSection *section);
+
+    /**
+     * @log_sync_global:
+     *
+     * This is the global version of @log_sync when the listener does
+     * not have a way to synchronize the log with finer granularity.
+     * When the listener registers with @log_sync_global defined, then
+     * its @log_sync must be NULL.  Vice versa.
+     *
+     * @listener: The #MemoryListener.
+     */
+    void (*log_sync_global)(MemoryListener *listener);
 
     /**
      * @log_clear:
@@ -776,11 +795,35 @@ static inline FlatView *address_space_to_flatview(AddressSpace *as)
     return qatomic_rcu_read(&as->current_map);
 }
 
-typedef int (*flatview_cb)(Int128 start,
-                           Int128 len,
-                           const MemoryRegion*, void*);
+/**
+ * typedef flatview_cb: callback for flatview_for_each_range()
+ *
+ * @start: start address of the range within the FlatView
+ * @len: length of the range in bytes
+ * @mr: MemoryRegion covering this range
+ * @offset_in_region: offset of the first byte of the range within @mr
+ * @opaque: data pointer passed to flatview_for_each_range()
+ *
+ * Returns: true to stop the iteration, false to keep going.
+ */
+typedef bool (*flatview_cb)(Int128 start,
+                            Int128 len,
+                            const MemoryRegion *mr,
+                            hwaddr offset_in_region,
+                            void *opaque);
 
-void flatview_for_each_range(FlatView *fv, flatview_cb cb , void *opaque);
+/**
+ * flatview_for_each_range: Iterate through a FlatView
+ * @fv: the FlatView to iterate through
+ * @cb: function to call for each range
+ * @opaque: opaque data pointer to pass to @cb
+ *
+ * A FlatView is made up of a list of non-overlapping ranges, each of
+ * which is a slice of a MemoryRegion. This function iterates through
+ * each range in @fv, calling @cb. The callback function can terminate
+ * iteration early by returning 'true'.
+ */
+void flatview_for_each_range(FlatView *fv, flatview_cb cb, void *opaque);
 
 /**
  * struct MemoryRegionSection: describes a fragment of a #MemoryRegion
@@ -828,7 +871,7 @@ static inline bool MemoryRegionSection_eq(MemoryRegionSection *a,
  * @size: size of the region; any subregions beyond this size will be clipped
  */
 void memory_region_init(MemoryRegion *mr,
-                        struct Object *owner,
+                        Object *owner,
                         const char *name,
                         uint64_t size);
 
@@ -876,7 +919,7 @@ void memory_region_unref(MemoryRegion *mr);
  * @size: size of the region.
  */
 void memory_region_init_io(MemoryRegion *mr,
-                           struct Object *owner,
+                           Object *owner,
                            const MemoryRegionOps *ops,
                            void *opaque,
                            const char *name,
@@ -898,40 +941,42 @@ void memory_region_init_io(MemoryRegion *mr,
  * RAM memory region to be migrated; that is the responsibility of the caller.
  */
 void memory_region_init_ram_nomigrate(MemoryRegion *mr,
-                                      struct Object *owner,
+                                      Object *owner,
                                       const char *name,
                                       uint64_t size,
                                       Error **errp);
 
 /**
- * memory_region_init_ram_shared_nomigrate:  Initialize RAM memory region.
- *                                           Accesses into the region will
- *                                           modify memory directly.
+ * memory_region_init_ram_flags_nomigrate:  Initialize RAM memory region.
+ *                                          Accesses into the region will
+ *                                          modify memory directly.
  *
  * @mr: the #MemoryRegion to be initialized.
  * @owner: the object that tracks the region's reference count
  * @name: Region name, becomes part of RAMBlock name used in migration stream
  *        must be unique within any device
  * @size: size of the region.
- * @share: allow remapping RAM to different addresses
+ * @ram_flags: RamBlock flags. Supported flags: RAM_SHARED, RAM_NORESERVE.
  * @errp: pointer to Error*, to store an error if it happens.
  *
- * Note that this function is similar to memory_region_init_ram_nomigrate.
- * The only difference is part of the RAM region can be remapped.
+ * Note that this function does not do anything to cause the data in the
+ * RAM memory region to be migrated; that is the responsibility of the caller.
  */
-void memory_region_init_ram_shared_nomigrate(MemoryRegion *mr,
-                                             struct Object *owner,
-                                             const char *name,
-                                             uint64_t size,
-                                             bool share,
-                                             Error **errp);
+void memory_region_init_ram_flags_nomigrate(MemoryRegion *mr,
+                                            Object *owner,
+                                            const char *name,
+                                            uint64_t size,
+                                            uint32_t ram_flags,
+                                            Error **errp);
 
 /**
  * memory_region_init_resizeable_ram:  Initialize memory region with resizeable
  *                                     RAM.  Accesses into the region will
  *                                     modify memory directly.  Only an initial
  *                                     portion of this RAM is actually used.
- *                                     The used size can change across reboots.
+ *                                     Changing the size while migrating
+ *                                     can result in the migration being
+ *                                     canceled.
  *
  * @mr: the #MemoryRegion to be initialized.
  * @owner: the object that tracks the region's reference count
@@ -946,7 +991,7 @@ void memory_region_init_ram_shared_nomigrate(MemoryRegion *mr,
  * RAM memory region to be migrated; that is the responsibility of the caller.
  */
 void memory_region_init_resizeable_ram(MemoryRegion *mr,
-                                       struct Object *owner,
+                                       Object *owner,
                                        const char *name,
                                        uint64_t size,
                                        uint64_t max_size,
@@ -967,10 +1012,8 @@ void memory_region_init_resizeable_ram(MemoryRegion *mr,
  * @size: size of the region.
  * @align: alignment of the region base address; if 0, the default alignment
  *         (getpagesize()) will be used.
- * @ram_flags: Memory region features:
- *             - RAM_SHARED: memory must be mmaped with the MAP_SHARED flag
- *             - RAM_PMEM: the memory is persistent memory
- *             Other bits are ignored now.
+ * @ram_flags: RamBlock flags. Supported flags: RAM_SHARED, RAM_PMEM,
+ *             RAM_NORESERVE,
  * @path: the path in which to allocate the RAM.
  * @readonly: true to open @path for reading, false for read/write.
  * @errp: pointer to Error*, to store an error if it happens.
@@ -979,7 +1022,7 @@ void memory_region_init_resizeable_ram(MemoryRegion *mr,
  * RAM memory region to be migrated; that is the responsibility of the caller.
  */
 void memory_region_init_ram_from_file(MemoryRegion *mr,
-                                      struct Object *owner,
+                                      Object *owner,
                                       const char *name,
                                       uint64_t size,
                                       uint64_t align,
@@ -996,7 +1039,8 @@ void memory_region_init_ram_from_file(MemoryRegion *mr,
  * @owner: the object that tracks the region's reference count
  * @name: the name of the region.
  * @size: size of the region.
- * @share: %true if memory must be mmaped with the MAP_SHARED flag
+ * @ram_flags: RamBlock flags. Supported flags: RAM_SHARED, RAM_PMEM,
+ *             RAM_NORESERVE.
  * @fd: the fd to mmap.
  * @offset: offset within the file referenced by fd
  * @errp: pointer to Error*, to store an error if it happens.
@@ -1005,10 +1049,10 @@ void memory_region_init_ram_from_file(MemoryRegion *mr,
  * RAM memory region to be migrated; that is the responsibility of the caller.
  */
 void memory_region_init_ram_from_fd(MemoryRegion *mr,
-                                    struct Object *owner,
+                                    Object *owner,
                                     const char *name,
                                     uint64_t size,
-                                    bool share,
+                                    uint32_t ram_flags,
                                     int fd,
                                     ram_addr_t offset,
                                     Error **errp);
@@ -1030,7 +1074,7 @@ void memory_region_init_ram_from_fd(MemoryRegion *mr,
  * RAM memory region to be migrated; that is the responsibility of the caller.
  */
 void memory_region_init_ram_ptr(MemoryRegion *mr,
-                                struct Object *owner,
+                                Object *owner,
                                 const char *name,
                                 uint64_t size,
                                 void *ptr);
@@ -1058,7 +1102,7 @@ void memory_region_init_ram_ptr(MemoryRegion *mr,
  * (For RAM device memory regions, migrating the contents rarely makes sense.)
  */
 void memory_region_init_ram_device_ptr(MemoryRegion *mr,
-                                       struct Object *owner,
+                                       Object *owner,
                                        const char *name,
                                        uint64_t size,
                                        void *ptr);
@@ -1076,7 +1120,7 @@ void memory_region_init_ram_device_ptr(MemoryRegion *mr,
  * @size: size of the region.
  */
 void memory_region_init_alias(MemoryRegion *mr,
-                              struct Object *owner,
+                              Object *owner,
                               const char *name,
                               MemoryRegion *orig,
                               hwaddr offset,
@@ -1101,7 +1145,7 @@ void memory_region_init_alias(MemoryRegion *mr,
  * @errp: pointer to Error*, to store an error if it happens.
  */
 void memory_region_init_rom_nomigrate(MemoryRegion *mr,
-                                      struct Object *owner,
+                                      Object *owner,
                                       const char *name,
                                       uint64_t size,
                                       Error **errp);
@@ -1124,7 +1168,7 @@ void memory_region_init_rom_nomigrate(MemoryRegion *mr,
  * @errp: pointer to Error*, to store an error if it happens.
  */
 void memory_region_init_rom_device_nomigrate(MemoryRegion *mr,
-                                             struct Object *owner,
+                                             Object *owner,
                                              const MemoryRegionOps *ops,
                                              void *opaque,
                                              const char *name,
@@ -1183,7 +1227,7 @@ void memory_region_init_iommu(void *_iommu_mr,
  * If you pass a non-NULL non-device @owner then we will assert.
  */
 void memory_region_init_ram(MemoryRegion *mr,
-                            struct Object *owner,
+                            Object *owner,
                             const char *name,
                             uint64_t size,
                             Error **errp);
@@ -1210,7 +1254,7 @@ void memory_region_init_ram(MemoryRegion *mr,
  * @errp: pointer to Error*, to store an error if it happens.
  */
 void memory_region_init_rom(MemoryRegion *mr,
-                            struct Object *owner,
+                            Object *owner,
                             const char *name,
                             uint64_t size,
                             Error **errp);
@@ -1241,7 +1285,7 @@ void memory_region_init_rom(MemoryRegion *mr,
  * @errp: pointer to Error*, to store an error if it happens.
  */
 void memory_region_init_rom_device(MemoryRegion *mr,
-                                   struct Object *owner,
+                                   Object *owner,
                                    const MemoryRegionOps *ops,
                                    void *opaque,
                                    const char *name,
@@ -1254,7 +1298,7 @@ void memory_region_init_rom_device(MemoryRegion *mr,
  *
  * @mr: the memory region being queried.
  */
-struct Object *memory_region_owner(MemoryRegion *mr);
+Object *memory_region_owner(MemoryRegion *mr);
 
 /**
  * memory_region_size: get a memory region's size.
@@ -1562,8 +1606,8 @@ void *memory_region_get_ram_ptr(MemoryRegion *mr);
 
 /* memory_region_ram_resize: Resize a RAM region.
  *
- * Only legal before guest might have detected the memory size: e.g. on
- * incoming migration, or right after reset.
+ * Resizing RAM while migrating can result in the migration being canceled.
+ * Care has to be taken if the guest might have already detected the memory.
  *
  * @mr: a memory region created with @memory_region_init_resizeable_ram.
  * @newsize: the new size the region
@@ -2279,7 +2323,7 @@ static inline uint8_t address_space_ldub_cached(MemoryRegionCache *cache,
 }
 
 static inline void address_space_stb_cached(MemoryRegionCache *cache,
-    hwaddr addr, uint32_t val, MemTxAttrs attrs, MemTxResult *result)
+    hwaddr addr, uint8_t val, MemTxAttrs attrs, MemTxResult *result)
 {
     assert(addr < cache->len);
     if (likely(cache->ptr)) {

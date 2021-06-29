@@ -31,7 +31,6 @@
 #include "hw/char/serial.h"
 #include "hw/block/flash.h"
 #include "sysemu/sysemu.h"
-#include "sysemu/qtest.h"
 #include "sysemu/reset.h"
 #include "hw/boards.h"
 #include "sysemu/device_tree.h"
@@ -39,9 +38,7 @@
 #include "elf.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
-#include "qemu/log.h"
 #include "qemu/option.h"
-#include "exec/address-spaces.h"
 
 #include "hw/intc/ppc-uic.h"
 #include "hw/ppc/ppc.h"

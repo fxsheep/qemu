@@ -30,7 +30,6 @@
 #include "qemu/main-loop.h"
 #include "qemu/guest-random.h"
 #include "exec/exec-all.h"
-#include "hw/boards.h"
 
 #include "tcg-accel-ops.h"
 #include "tcg-accel-ops-rr.h"
@@ -269,7 +268,7 @@ void rr_start_vcpu_thread(CPUState *cpu)
     static QemuThread *single_tcg_cpu_thread;
 
     g_assert(tcg_enabled());
-    parallel_cpus = false;
+    tcg_cpu_init_cflags(cpu, false);
 
     if (!single_tcg_cpu_thread) {
         cpu->thread = g_malloc0(sizeof(QemuThread));

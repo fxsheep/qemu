@@ -460,6 +460,13 @@ typedef struct mips_def_t mips_def_t;
 typedef struct TCState TCState;
 struct TCState {
     target_ulong gpr[32];
+#if defined(TARGET_MIPS64)
+    /*
+     * For CPUs using 128-bit GPR registers, we put the lower halves in gpr[])
+     * and the upper halves in gpr_hi[].
+     */
+    uint64_t gpr_hi[32];
+#endif /* TARGET_MIPS64 */
     target_ulong PC;
     target_ulong HI[MIPS_DSP_ACC];
     target_ulong LO[MIPS_DSP_ACC];
@@ -504,9 +511,6 @@ struct TCState {
         MSACSR_FS_MASK)
 
     float_status msa_fp_status;
-
-    /* Upper 64-bit MMRs (multimedia registers); the lower 64-bit are GPRs */
-    uint64_t mmr[32];
 
 #define NUMBER_OF_MXU_REGISTERS 16
     target_ulong mxu_gpr[NUMBER_OF_MXU_REGISTERS - 1];
@@ -1148,13 +1152,13 @@ struct CPUMIPSState {
     CPUMIPSMVPContext *mvp;
 #if !defined(CONFIG_USER_ONLY)
     CPUMIPSTLBContext *tlb;
+    void *irq[8];
+    struct MIPSITUState *itu;
+    MemoryRegion *itc_tag; /* ITC Configuration Tags */
 #endif
 
     const mips_def_t *cpu_model;
-    void *irq[8];
     QEMUTimer *timer; /* Internal timer */
-    struct MIPSITUState *itu;
-    MemoryRegion *itc_tag; /* ITC Configuration Tags */
     target_ulong exception_base; /* ExceptionBase input to the core */
     uint64_t cp0_count_ns; /* CP0_Count clock period (in nanoseconds) */
 };
@@ -1219,22 +1223,6 @@ typedef CPUMIPSState CPUArchState;
 typedef MIPSCPU ArchCPU;
 
 #include "exec/cpu-all.h"
-
-/*
- * Memory access type :
- * may be needed for precise access rights control and precise exceptions.
- */
-enum {
-    /* 1 bit to define user level / supervisor access */
-    ACCESS_USER  = 0x00,
-    ACCESS_SUPER = 0x01,
-    /* 1 bit to indicate direction */
-    ACCESS_STORE = 0x02,
-    /* Type of instruction that generated the access */
-    ACCESS_CODE  = 0x10, /* Code fetch access                */
-    ACCESS_INT   = 0x20, /* Integer load/store access        */
-    ACCESS_FLOAT = 0x30, /* floating point load/store access */
-};
 
 /* Exceptions */
 enum {
@@ -1328,11 +1316,15 @@ uint64_t cpu_mips_phys_to_kseg1(void *opaque, uint64_t addr);
 bool mips_um_ksegs_enabled(void);
 void mips_um_ksegs_enable(void);
 
+#if !defined(CONFIG_USER_ONLY)
+
 /* mips_int.c */
 void cpu_mips_soft_irq(CPUMIPSState *env, int irq, int level);
 
 /* mips_itu.c */
 void itc_reconfigure(struct MIPSITUState *tag);
+
+#endif /* !CONFIG_USER_ONLY */
 
 /* helper.c */
 target_ulong exception_resume_pc(CPUMIPSState *env);

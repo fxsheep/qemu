@@ -25,7 +25,6 @@
 #include "qemu/config-file.h"
 #include "hw/char/serial.h"
 #include "hw/pci/pci.h"
-#include "hw/boards.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/kvm.h"
 #include "sysemu/reset.h"
@@ -39,7 +38,6 @@
 #include "hw/loader.h"
 #include "elf.h"
 #include "hw/sysbus.h"
-#include "exec/address-spaces.h"
 #include "qemu/host-utils.h"
 #include "qemu/option.h"
 #include "hw/pci-host/ppce500.h"
@@ -231,11 +229,14 @@ static int create_devtree_etsec(SysBusDevice *sbdev, PlatformDevtreeData *data)
     assert(irq2 >= 0);
 
     qemu_fdt_add_subnode(fdt, node);
+    qemu_fdt_setprop(fdt, node, "ranges", NULL, 0);
     qemu_fdt_setprop_string(fdt, node, "device_type", "network");
     qemu_fdt_setprop_string(fdt, node, "compatible", "fsl,etsec2");
     qemu_fdt_setprop_string(fdt, node, "model", "eTSEC");
     qemu_fdt_setprop(fdt, node, "local-mac-address", etsec->conf.macaddr.a, 6);
     qemu_fdt_setprop_cells(fdt, node, "fixed-link", 0, 1, 1000, 0, 0);
+    qemu_fdt_setprop_cells(fdt, node, "#size-cells", 1);
+    qemu_fdt_setprop_cells(fdt, node, "#address-cells", 1);
 
     qemu_fdt_add_subnode(fdt, group);
     qemu_fdt_setprop_cells(fdt, group, "reg", mmio0, 0x1000);

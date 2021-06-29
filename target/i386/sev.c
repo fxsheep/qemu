@@ -22,6 +22,7 @@
 #include "qom/object_interfaces.h"
 #include "qemu/base64.h"
 #include "qemu/module.h"
+#include "qemu/uuid.h"
 #include "sysemu/kvm.h"
 #include "sev_i386.h"
 #include "sysemu/sysemu.h"
@@ -29,9 +30,9 @@
 #include "trace.h"
 #include "migration/blocker.h"
 #include "qom/object.h"
-#include "exec/address-spaces.h"
 #include "monitor/monitor.h"
 #include "exec/confidential-guest-support.h"
+#include "hw/i386/pc.h"
 
 #define TYPE_SEV_GUEST "sev-guest"
 OBJECT_DECLARE_SIMPLE_TYPE(SevGuestState, SEV_GUEST)
@@ -67,38 +68,50 @@ struct SevGuestState {
     int sev_fd;
     SevState state;
     gchar *measurement;
+
+    uint32_t reset_cs;
+    uint32_t reset_ip;
+    bool reset_data_valid;
 };
 
 #define DEFAULT_GUEST_POLICY    0x1 /* disable debug */
 #define DEFAULT_SEV_DEVICE      "/dev/sev"
 
+#define SEV_INFO_BLOCK_GUID     "00f771de-1a7e-4fcb-890e-68c77e2fb44e"
+typedef struct __attribute__((__packed__)) SevInfoBlock {
+    /* SEV-ES Reset Vector Address */
+    uint32_t reset_addr;
+} SevInfoBlock;
+
 static SevGuestState *sev_guest;
 static Error *sev_mig_blocker;
 
 static const char *const sev_fw_errlist[] = {
-    "",
-    "Platform state is invalid",
-    "Guest state is invalid",
-    "Platform configuration is invalid",
-    "Buffer too small",
-    "Platform is already owned",
-    "Certificate is invalid",
-    "Policy is not allowed",
-    "Guest is not active",
-    "Invalid address",
-    "Bad signature",
-    "Bad measurement",
-    "Asid is already owned",
-    "Invalid ASID",
-    "WBINVD is required",
-    "DF_FLUSH is required",
-    "Guest handle is invalid",
-    "Invalid command",
-    "Guest is active",
-    "Hardware error",
-    "Hardware unsafe",
-    "Feature not supported",
-    "Invalid parameter"
+    [SEV_RET_SUCCESS]                = "",
+    [SEV_RET_INVALID_PLATFORM_STATE] = "Platform state is invalid",
+    [SEV_RET_INVALID_GUEST_STATE]    = "Guest state is invalid",
+    [SEV_RET_INAVLID_CONFIG]         = "Platform configuration is invalid",
+    [SEV_RET_INVALID_LEN]            = "Buffer too small",
+    [SEV_RET_ALREADY_OWNED]          = "Platform is already owned",
+    [SEV_RET_INVALID_CERTIFICATE]    = "Certificate is invalid",
+    [SEV_RET_POLICY_FAILURE]         = "Policy is not allowed",
+    [SEV_RET_INACTIVE]               = "Guest is not active",
+    [SEV_RET_INVALID_ADDRESS]        = "Invalid address",
+    [SEV_RET_BAD_SIGNATURE]          = "Bad signature",
+    [SEV_RET_BAD_MEASUREMENT]        = "Bad measurement",
+    [SEV_RET_ASID_OWNED]             = "ASID is already owned",
+    [SEV_RET_INVALID_ASID]           = "Invalid ASID",
+    [SEV_RET_WBINVD_REQUIRED]        = "WBINVD is required",
+    [SEV_RET_DFFLUSH_REQUIRED]       = "DF_FLUSH is required",
+    [SEV_RET_INVALID_GUEST]          = "Guest handle is invalid",
+    [SEV_RET_INVALID_COMMAND]        = "Invalid command",
+    [SEV_RET_ACTIVE]                 = "Guest is active",
+    [SEV_RET_HWSEV_RET_PLATFORM]     = "Hardware error",
+    [SEV_RET_HWSEV_RET_UNSAFE]       = "Hardware unsafe",
+    [SEV_RET_UNSUPPORTED]            = "Feature not supported",
+    [SEV_RET_INVALID_PARAM]          = "Invalid parameter",
+    [SEV_RET_RESOURCE_LIMIT]         = "Required firmware resource depleted",
+    [SEV_RET_SECURE_DATA_INVALID]    = "Part-specific integrity check failure",
 };
 
 #define SEV_FW_MAX_ERROR      ARRAY_SIZE(sev_fw_errlist)
@@ -169,7 +182,8 @@ sev_set_guest_state(SevGuestState *sev, SevState new_state)
 }
 
 static void
-sev_ram_block_added(RAMBlockNotifier *n, void *host, size_t size)
+sev_ram_block_added(RAMBlockNotifier *n, void *host, size_t size,
+                    size_t max_size)
 {
     int r;
     struct kvm_enc_region range;
@@ -186,19 +200,20 @@ sev_ram_block_added(RAMBlockNotifier *n, void *host, size_t size)
     }
 
     range.addr = (__u64)(unsigned long)host;
-    range.size = size;
+    range.size = max_size;
 
-    trace_kvm_memcrypt_register_region(host, size);
+    trace_kvm_memcrypt_register_region(host, max_size);
     r = kvm_vm_ioctl(kvm_state, KVM_MEMORY_ENCRYPT_REG_REGION, &range);
     if (r) {
         error_report("%s: failed to register region (%p+%#zx) error '%s'",
-                     __func__, host, size, strerror(errno));
+                     __func__, host, max_size, strerror(errno));
         exit(1);
     }
 }
 
 static void
-sev_ram_block_removed(RAMBlockNotifier *n, void *host, size_t size)
+sev_ram_block_removed(RAMBlockNotifier *n, void *host, size_t size,
+                      size_t max_size)
 {
     int r;
     struct kvm_enc_region range;
@@ -215,13 +230,13 @@ sev_ram_block_removed(RAMBlockNotifier *n, void *host, size_t size)
     }
 
     range.addr = (__u64)(unsigned long)host;
-    range.size = size;
+    range.size = max_size;
 
-    trace_kvm_memcrypt_unregister_region(host, size);
+    trace_kvm_memcrypt_unregister_region(host, max_size);
     r = kvm_vm_ioctl(kvm_state, KVM_MEMORY_ENCRYPT_UNREG_REGION, &range);
     if (r) {
         error_report("%s: failed to unregister region (%p+%#zx)",
-                     __func__, host, size);
+                     __func__, host, max_size);
     }
 }
 
@@ -339,6 +354,12 @@ bool
 sev_enabled(void)
 {
     return !!sev_guest;
+}
+
+bool
+sev_es_enabled(void)
+{
+    return sev_enabled() && (sev_guest->policy & SEV_POLICY_ES);
 }
 
 uint64_t
@@ -473,6 +494,73 @@ out:
     return cap;
 }
 
+SevAttestationReport *
+sev_get_attestation_report(const char *mnonce, Error **errp)
+{
+    struct kvm_sev_attestation_report input = {};
+    SevAttestationReport *report = NULL;
+    SevGuestState *sev = sev_guest;
+    guchar *data;
+    guchar *buf;
+    gsize len;
+    int err = 0, ret;
+
+    if (!sev_enabled()) {
+        error_setg(errp, "SEV is not enabled");
+        return NULL;
+    }
+
+    /* lets decode the mnonce string */
+    buf = g_base64_decode(mnonce, &len);
+    if (!buf) {
+        error_setg(errp, "SEV: failed to decode mnonce input");
+        return NULL;
+    }
+
+    /* verify the input mnonce length */
+    if (len != sizeof(input.mnonce)) {
+        error_setg(errp, "SEV: mnonce must be %zu bytes (got %" G_GSIZE_FORMAT ")",
+                sizeof(input.mnonce), len);
+        g_free(buf);
+        return NULL;
+    }
+
+    /* Query the report length */
+    ret = sev_ioctl(sev->sev_fd, KVM_SEV_GET_ATTESTATION_REPORT,
+            &input, &err);
+    if (ret < 0) {
+        if (err != SEV_RET_INVALID_LEN) {
+            error_setg(errp, "failed to query the attestation report length "
+                    "ret=%d fw_err=%d (%s)", ret, err, fw_error_to_str(err));
+            g_free(buf);
+            return NULL;
+        }
+    }
+
+    data = g_malloc(input.len);
+    input.uaddr = (unsigned long)data;
+    memcpy(input.mnonce, buf, sizeof(input.mnonce));
+
+    /* Query the report */
+    ret = sev_ioctl(sev->sev_fd, KVM_SEV_GET_ATTESTATION_REPORT,
+            &input, &err);
+    if (ret) {
+        error_setg_errno(errp, errno, "Failed to get attestation report"
+                " ret=%d fw_err=%d (%s)", ret, err, fw_error_to_str(err));
+        goto e_free_data;
+    }
+
+    report = g_new0(SevAttestationReport, 1);
+    report->data = g_base64_encode(data, input.len);
+
+    trace_kvm_sev_attestation_report(mnonce, report->data);
+
+e_free_data:
+    g_free(data);
+    g_free(buf);
+    return report;
+}
+
 static int
 sev_read_file_base64(const char *filename, guchar **data, gsize *len)
 {
@@ -561,6 +649,20 @@ sev_launch_update_data(SevGuestState *sev, uint8_t *addr, uint64_t len)
     return ret;
 }
 
+static int
+sev_launch_update_vmsa(SevGuestState *sev)
+{
+    int ret, fw_error;
+
+    ret = sev_ioctl(sev->sev_fd, KVM_SEV_LAUNCH_UPDATE_VMSA, NULL, &fw_error);
+    if (ret) {
+        error_report("%s: LAUNCH_UPDATE_VMSA ret=%d fw_error=%d '%s'",
+                __func__, ret, fw_error, fw_error_to_str(fw_error));
+    }
+
+    return ret;
+}
+
 static void
 sev_launch_get_measure(Notifier *notifier, void *unused)
 {
@@ -571,6 +673,14 @@ sev_launch_get_measure(Notifier *notifier, void *unused)
 
     if (!sev_check_state(sev, SEV_STATE_LAUNCH_UPDATE)) {
         return;
+    }
+
+    if (sev_es_enabled()) {
+        /* measure all the VM save areas before getting launch_measure */
+        ret = sev_launch_update_vmsa(sev);
+        if (ret) {
+            exit(1);
+        }
     }
 
     measurement = g_new0(struct kvm_sev_launch_measure, 1);
@@ -651,7 +761,7 @@ sev_launch_finish(SevGuestState *sev)
 }
 
 static void
-sev_vm_state_change(void *opaque, int running, RunState state)
+sev_vm_state_change(void *opaque, bool running, RunState state)
 {
     SevGuestState *sev = opaque;
 
@@ -667,7 +777,7 @@ int sev_kvm_init(ConfidentialGuestSupport *cgs, Error **errp)
     SevGuestState *sev
         = (SevGuestState *)object_dynamic_cast(OBJECT(cgs), TYPE_SEV_GUEST);
     char *devname;
-    int ret, fw_error;
+    int ret, fw_error, cmd;
     uint32_t ebx;
     uint32_t host_cbitpos;
     struct sev_user_data_status status = {};
@@ -724,8 +834,26 @@ int sev_kvm_init(ConfidentialGuestSupport *cgs, Error **errp)
     sev->api_major = status.api_major;
     sev->api_minor = status.api_minor;
 
+    if (sev_es_enabled()) {
+        if (!kvm_kernel_irqchip_allowed()) {
+            error_report("%s: SEV-ES guests require in-kernel irqchip support",
+                         __func__);
+            goto err;
+        }
+
+        if (!(status.flags & SEV_STATUS_FLAGS_CONFIG_ES)) {
+            error_report("%s: guest policy requires SEV-ES, but "
+                         "host SEV-ES support unavailable",
+                         __func__);
+            goto err;
+        }
+        cmd = KVM_SEV_ES_INIT;
+    } else {
+        cmd = KVM_SEV_INIT;
+    }
+
     trace_kvm_sev_init();
-    ret = sev_ioctl(sev->sev_fd, KVM_SEV_INIT, NULL, &fw_error);
+    ret = sev_ioctl(sev->sev_fd, cmd, NULL, &fw_error);
     if (ret) {
         error_setg(errp, "%s: failed to initialize ret=%d fw_error=%d '%s'",
                    __func__, ret, fw_error, fw_error_to_str(fw_error));
@@ -828,6 +956,122 @@ int sev_inject_launch_secret(const char *packet_hdr, const char *secret,
         error_setg(errp, "SEV: failed to inject secret ret=%d fw_error=%d '%s'",
                      ret, error, fw_error_to_str(error));
         return ret;
+    }
+
+    return 0;
+}
+
+static int
+sev_es_parse_reset_block(SevInfoBlock *info, uint32_t *addr)
+{
+    if (!info->reset_addr) {
+        error_report("SEV-ES reset address is zero");
+        return 1;
+    }
+
+    *addr = info->reset_addr;
+
+    return 0;
+}
+
+static int
+sev_es_find_reset_vector(void *flash_ptr, uint64_t flash_size,
+                         uint32_t *addr)
+{
+    QemuUUID info_guid, *guid;
+    SevInfoBlock *info;
+    uint8_t *data;
+    uint16_t *len;
+
+    /*
+     * Initialize the address to zero. An address of zero with a successful
+     * return code indicates that SEV-ES is not active.
+     */
+    *addr = 0;
+
+    /*
+     * Extract the AP reset vector for SEV-ES guests by locating the SEV GUID.
+     * The SEV GUID is located on its own (original implementation) or within
+     * the Firmware GUID Table (new implementation), either of which are
+     * located 32 bytes from the end of the flash.
+     *
+     * Check the Firmware GUID Table first.
+     */
+    if (pc_system_ovmf_table_find(SEV_INFO_BLOCK_GUID, &data, NULL)) {
+        return sev_es_parse_reset_block((SevInfoBlock *)data, addr);
+    }
+
+    /*
+     * SEV info block not found in the Firmware GUID Table (or there isn't
+     * a Firmware GUID Table), fall back to the original implementation.
+     */
+    data = flash_ptr + flash_size - 0x20;
+
+    qemu_uuid_parse(SEV_INFO_BLOCK_GUID, &info_guid);
+    info_guid = qemu_uuid_bswap(info_guid); /* GUIDs are LE */
+
+    guid = (QemuUUID *)(data - sizeof(info_guid));
+    if (!qemu_uuid_is_equal(guid, &info_guid)) {
+        error_report("SEV information block/Firmware GUID Table block not found in pflash rom");
+        return 1;
+    }
+
+    len = (uint16_t *)((uint8_t *)guid - sizeof(*len));
+    info = (SevInfoBlock *)(data - le16_to_cpu(*len));
+
+    return sev_es_parse_reset_block(info, addr);
+}
+
+void sev_es_set_reset_vector(CPUState *cpu)
+{
+    X86CPU *x86;
+    CPUX86State *env;
+
+    /* Only update if we have valid reset information */
+    if (!sev_guest || !sev_guest->reset_data_valid) {
+        return;
+    }
+
+    /* Do not update the BSP reset state */
+    if (cpu->cpu_index == 0) {
+        return;
+    }
+
+    x86 = X86_CPU(cpu);
+    env = &x86->env;
+
+    cpu_x86_load_seg_cache(env, R_CS, 0xf000, sev_guest->reset_cs, 0xffff,
+                           DESC_P_MASK | DESC_S_MASK | DESC_CS_MASK |
+                           DESC_R_MASK | DESC_A_MASK);
+
+    env->eip = sev_guest->reset_ip;
+}
+
+int sev_es_save_reset_vector(void *flash_ptr, uint64_t flash_size)
+{
+    CPUState *cpu;
+    uint32_t addr;
+    int ret;
+
+    if (!sev_es_enabled()) {
+        return 0;
+    }
+
+    addr = 0;
+    ret = sev_es_find_reset_vector(flash_ptr, flash_size,
+                                   &addr);
+    if (ret) {
+        return ret;
+    }
+
+    if (addr) {
+        sev_guest->reset_cs = addr & 0xffff0000;
+        sev_guest->reset_ip = addr & 0x0000ffff;
+        sev_guest->reset_data_valid = true;
+
+        CPU_FOREACH(cpu) {
+            sev_es_set_reset_vector(cpu);
+        }
     }
 
     return 0;

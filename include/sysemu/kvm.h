@@ -249,10 +249,6 @@ int kvm_update_guest_debug(CPUState *cpu, unsigned long reinject_trap);
 int kvm_on_sigbus_vcpu(CPUState *cpu, int code, void *addr);
 int kvm_on_sigbus(int code, void *addr);
 
-/* interface with exec.c */
-
-void phys_mem_set_alloc(void *(*alloc)(size_t, uint64_t *align, bool shared));
-
 /* internal API */
 
 int kvm_ioctl(KVMState *s, int type, ...);
@@ -540,5 +536,15 @@ int kvm_get_max_memslots(void);
 
 /* Notify resamplefd for EOI of specific interrupts. */
 void kvm_resample_fd_notify(int gsi);
+
+/**
+ * kvm_cpu_check_are_resettable - return whether CPUs can be reset
+ *
+ * Returns: true: CPUs are resettable
+ *          false: CPUs are not resettable
+ */
+bool kvm_cpu_check_are_resettable(void);
+
+bool kvm_arch_cpu_check_are_resettable(void);
 
 #endif

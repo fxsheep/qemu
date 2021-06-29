@@ -57,7 +57,7 @@
 #define daemon qemu_fake_daemon_function
 #include <stdlib.h>
 #undef daemon
-extern int daemon(int, int);
+QEMU_EXTERN_C int daemon(int, int);
 #endif
 
 #ifdef _WIN32
@@ -104,12 +104,32 @@ extern int daemon(int, int);
 #include <setjmp.h>
 #include <signal.h>
 
+#ifdef CONFIG_IOVEC
+#include <sys/uio.h>
+#endif
+
+#if defined(__linux__) && defined(__sparc__)
+/* The SPARC definition of QEMU_VMALLOC_ALIGN needs SHMLBA */
+#include <sys/shm.h>
+#endif
+
 #ifndef _WIN32
 #include <sys/wait.h>
 #else
 #define WIFEXITED(x)   1
 #define WEXITSTATUS(x) (x)
 #endif
+
+#ifdef __APPLE__
+#include <AvailabilityMacros.h>
+#endif
+
+/*
+ * This is somewhat like a system header; it must be outside any extern "C"
+ * block because it includes system headers itself, including glib.h,
+ * which will not compile if inside an extern "C" block.
+ */
+#include "glib-compat.h"
 
 #ifdef _WIN32
 #include "sysemu/os-win32.h"
@@ -119,11 +139,10 @@ extern int daemon(int, int);
 #include "sysemu/os-posix.h"
 #endif
 
-#ifdef __APPLE__
-#include <AvailabilityMacros.h>
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-#include "glib-compat.h"
 #include "qemu/typedefs.h"
 
 /*
@@ -175,6 +194,9 @@ extern int daemon(int, int);
 #endif
 #ifndef MAP_FIXED_NOREPLACE
 #define MAP_FIXED_NOREPLACE 0
+#endif
+#ifndef MAP_NORESERVE
+#define MAP_NORESERVE 0
 #endif
 #ifndef ENOMEDIUM
 #define ENOMEDIUM ENODEV
@@ -297,11 +319,16 @@ extern int daemon(int, int);
     })
 #endif
 
-/* Round number down to multiple */
+/*
+ * Round number down to multiple. Safe when m is not a power of 2 (see
+ * ROUND_DOWN for a faster version when a power of 2 is guaranteed).
+ */
 #define QEMU_ALIGN_DOWN(n, m) ((n) / (m) * (m))
 
-/* Round number up to multiple. Safe when m is not a power of 2 (see
- * ROUND_UP for a faster version when a power of 2 is guaranteed) */
+/*
+ * Round number up to multiple. Safe when m is not a power of 2 (see
+ * ROUND_UP for a faster version when a power of 2 is guaranteed).
+ */
 #define QEMU_ALIGN_UP(n, m) QEMU_ALIGN_DOWN((n) + (m) - 1, (m))
 
 /* Check if n is a multiple of m */
@@ -318,11 +345,22 @@ extern int daemon(int, int);
 /* Check if pointer p is n-bytes aligned */
 #define QEMU_PTR_IS_ALIGNED(p, n) QEMU_IS_ALIGNED((uintptr_t)(p), (n))
 
-/* Round number up to multiple. Requires that d be a power of 2 (see
+/*
+ * Round number down to multiple. Requires that d be a power of 2 (see
  * QEMU_ALIGN_UP for a safer but slower version on arbitrary
- * numbers); works even if d is a smaller type than n.  */
+ * numbers); works even if d is a smaller type than n.
+ */
+#ifndef ROUND_DOWN
+#define ROUND_DOWN(n, d) ((n) & -(0 ? (n) : (d)))
+#endif
+
+/*
+ * Round number up to multiple. Requires that d be a power of 2 (see
+ * QEMU_ALIGN_UP for a safer but slower version on arbitrary
+ * numbers); works even if d is a smaller type than n.
+ */
 #ifndef ROUND_UP
-#define ROUND_UP(n, d) (((n) + (d) - 1) & -(0 ? (n) : (d)))
+#define ROUND_UP(n, d) ROUND_DOWN((n) + (d) - 1, (d))
 #endif
 
 #ifndef DIV_ROUND_UP
@@ -343,9 +381,34 @@ extern int daemon(int, int);
 int qemu_daemon(int nochdir, int noclose);
 void *qemu_try_memalign(size_t alignment, size_t size);
 void *qemu_memalign(size_t alignment, size_t size);
-void *qemu_anon_ram_alloc(size_t size, uint64_t *align, bool shared);
+void *qemu_anon_ram_alloc(size_t size, uint64_t *align, bool shared,
+                          bool noreserve);
 void qemu_vfree(void *ptr);
 void qemu_anon_ram_free(void *ptr, size_t size);
+
+/*
+ * Abstraction of PROT_ and MAP_ flags as passed to mmap(), for example,
+ * consumed by qemu_ram_mmap().
+ */
+
+/* Map PROT_READ instead of PROT_READ | PROT_WRITE. */
+#define QEMU_MAP_READONLY   (1 << 0)
+
+/* Use MAP_SHARED instead of MAP_PRIVATE. */
+#define QEMU_MAP_SHARED     (1 << 1)
+
+/*
+ * Use MAP_SYNC | MAP_SHARED_VALIDATE if supported. Ignored without
+ * QEMU_MAP_SHARED. If mapping fails, warn and fallback to !QEMU_MAP_SYNC.
+ */
+#define QEMU_MAP_SYNC       (1 << 2)
+
+/*
+ * Use MAP_NORESERVE to skip reservation of swap space (or huge pages if
+ * applicable). Bail out if not supported/effective.
+ */
+#define QEMU_MAP_NORESERVE  (1 << 3)
+
 
 #define QEMU_MADV_INVALID -1
 
@@ -391,7 +454,7 @@ void qemu_anon_ram_free(void *ptr, size_t size);
 #ifdef MADV_REMOVE
 #define QEMU_MADV_REMOVE MADV_REMOVE
 #else
-#define QEMU_MADV_REMOVE QEMU_MADV_INVALID
+#define QEMU_MADV_REMOVE QEMU_MADV_DONTNEED
 #endif
 
 #elif defined(CONFIG_POSIX_MADVISE)
@@ -405,7 +468,7 @@ void qemu_anon_ram_free(void *ptr, size_t size);
 #define QEMU_MADV_DONTDUMP QEMU_MADV_INVALID
 #define QEMU_MADV_HUGEPAGE  QEMU_MADV_INVALID
 #define QEMU_MADV_NOHUGEPAGE  QEMU_MADV_INVALID
-#define QEMU_MADV_REMOVE QEMU_MADV_INVALID
+#define QEMU_MADV_REMOVE QEMU_MADV_DONTNEED
 
 #else /* no-op */
 
@@ -459,7 +522,6 @@ void qemu_anon_ram_free(void *ptr, size_t size);
    /* Use 1 MiB (segment size) alignment so gmap can be used by KVM. */
 #  define QEMU_VMALLOC_ALIGN (256 * 4096)
 #elif defined(__linux__) && defined(__sparc__)
-#include <sys/shm.h>
 #  define QEMU_VMALLOC_ALIGN MAX(qemu_real_host_page_size, SHMLBA)
 #else
 #  define QEMU_VMALLOC_ALIGN qemu_real_host_page_size
@@ -494,6 +556,7 @@ void sigaction_invoke(struct sigaction *action,
 #endif
 
 int qemu_madvise(void *addr, size_t len, int advice);
+int qemu_mprotect_rw(void *addr, size_t size);
 int qemu_mprotect_rwx(void *addr, size_t size);
 int qemu_mprotect_none(void *addr, size_t size);
 
@@ -539,8 +602,6 @@ struct iovec {
 
 ssize_t readv(int fd, const struct iovec *iov, int iov_cnt);
 ssize_t writev(int fd, const struct iovec *iov, int iov_cnt);
-#else
-#include <sys/uio.h>
 #endif
 
 #ifdef _WIN32
@@ -721,5 +782,9 @@ static inline int platform_does_not_support_system(const char *command)
     return -1;
 }
 #endif /* !HAVE_SYSTEM_FUNCTION */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

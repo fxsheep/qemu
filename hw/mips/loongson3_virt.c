@@ -29,10 +29,8 @@
 #include "qemu/cutils.h"
 #include "qemu/datadir.h"
 #include "qapi/error.h"
-#include "cpu.h"
 #include "elf.h"
 #include "kvm_mips.h"
-#include "hw/boards.h"
 #include "hw/char/serial.h"
 #include "hw/intc/loongson_liointc.h"
 #include "hw/mips/mips.h"
@@ -49,12 +47,10 @@
 #include "hw/pci-host/gpex.h"
 #include "hw/usb.h"
 #include "net/net.h"
-#include "exec/address-spaces.h"
 #include "sysemu/kvm.h"
 #include "sysemu/qtest.h"
 #include "sysemu/reset.h"
 #include "sysemu/runstate.h"
-#include "qemu/log.h"
 #include "qemu/error-report.h"
 
 #define PM_CNTL_MODE          0x10
@@ -72,7 +68,7 @@
 #define RTC_IRQ             1
 #define PCIE_IRQ_BASE       2
 
-const struct MemmapEntry virt_memmap[] = {
+const MemMapEntry virt_memmap[] = {
     [VIRT_LOWMEM] =      { 0x00000000,    0x10000000 },
     [VIRT_PM] =          { 0x10080000,         0x100 },
     [VIRT_FW_CFG] =      { 0x10080100,         0x100 },
@@ -86,13 +82,13 @@ const struct MemmapEntry virt_memmap[] = {
     [VIRT_HIGHMEM] =     { 0x80000000,           0x0 }, /* Variable */
 };
 
-static const struct MemmapEntry loader_memmap[] = {
+static const MemMapEntry loader_memmap[] = {
     [LOADER_KERNEL] =    { 0x00000000,     0x4000000 },
     [LOADER_INITRD] =    { 0x04000000,           0x0 }, /* Variable */
     [LOADER_CMDLINE] =   { 0x0ff00000,      0x100000 },
 };
 
-static const struct MemmapEntry loader_rommap[] = {
+static const MemMapEntry loader_rommap[] = {
     [LOADER_BOOTROM] =   { 0x1fc00000,        0x1000 },
     [LOADER_PARAM] =     { 0x1fc01000,       0x10000 },
 };

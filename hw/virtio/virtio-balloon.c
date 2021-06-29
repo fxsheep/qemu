@@ -66,8 +66,12 @@ static bool virtio_balloon_pbp_matches(PartiallyBalloonedPage *pbp,
 
 static bool virtio_balloon_inhibited(void)
 {
-    /* Postcopy cannot deal with concurrent discards, so it's special. */
-    return ram_block_discard_is_disabled() || migration_in_incoming_postcopy();
+    /*
+     * Postcopy cannot deal with concurrent discards,
+     * so it's special, as well as background snapshots.
+     */
+    return ram_block_discard_is_disabled() || migration_in_incoming_postcopy() ||
+            migration_in_bg_snapshot();
 }
 
 static void balloon_inflate_page(VirtIOBalloon *balloon,
@@ -659,9 +663,6 @@ virtio_balloon_free_page_hint_notify(NotifierWithReturn *n, void *data)
     }
 
     switch (pnd->reason) {
-    case PRECOPY_NOTIFY_SETUP:
-        precopy_enable_free_page_optimization();
-        break;
     case PRECOPY_NOTIFY_BEFORE_BITMAP_SYNC:
         virtio_balloon_free_page_stop(dev);
         break;
@@ -681,6 +682,7 @@ virtio_balloon_free_page_hint_notify(NotifierWithReturn *n, void *data)
          */
         virtio_balloon_free_page_done(dev);
         break;
+    case PRECOPY_NOTIFY_SETUP:
     case PRECOPY_NOTIFY_COMPLETE:
         break;
     default:

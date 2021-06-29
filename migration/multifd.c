@@ -27,6 +27,7 @@
 
 #include "qemu/yank.h"
 #include "io/channel-socket.h"
+#include "yank_functions.h"
 
 /* Multiple fd's */
 
@@ -360,7 +361,7 @@ static int multifd_recv_unfill_packet(MultiFDRecvParams *p, Error **errp)
         if (offset > (block->used_length - qemu_target_page_size())) {
             error_setg(errp, "multifd: offset too long %" PRIu64
                        " (max " RAM_ADDR_FMT ")",
-                       offset, block->max_length);
+                       offset, block->used_length);
             return -1;
         }
         p->pages->iov[i].iov_base = block->host + offset;
@@ -739,7 +740,16 @@ static void multifd_tls_outgoing_handshake(QIOTask *task,
     } else {
         trace_multifd_tls_outgoing_handshake_complete(ioc);
     }
-    multifd_channel_connect(p, ioc, err);
+
+    if (!multifd_channel_connect(p, ioc, err)) {
+        /*
+         * Error happen, mark multifd_send_thread status as 'quit' although it
+         * is not created, and then tell who pay attention to me.
+         */
+        p->quit = true;
+        qemu_sem_post(&multifd_send_state->channels_ready);
+        qemu_sem_post(&p->sem_sync);
+    }
 }
 
 static void *multifd_tls_handshake_thread(void *opaque)
@@ -798,9 +808,9 @@ static bool multifd_channel_connect(MultiFDSendParams *p,
                  * function after the TLS handshake,
                  * so we mustn't call multifd_send_thread until then
                  */
-                return false;
-            } else {
                 return true;
+            } else {
+                return false;
             }
         } else {
             /* update for tls qio channel */
@@ -808,10 +818,10 @@ static bool multifd_channel_connect(MultiFDSendParams *p,
             qemu_thread_create(&p->thread, p->name, multifd_send_thread, p,
                                    QEMU_THREAD_JOINABLE);
        }
-       return false;
+       return true;
     }
 
-    return true;
+    return false;
 }
 
 static void multifd_new_send_channel_cleanup(MultiFDSendParams *p,
@@ -844,7 +854,7 @@ static void multifd_new_send_channel_async(QIOTask *task, gpointer opaque)
         p->c = QIO_CHANNEL(sioc);
         qio_channel_set_delay(p->c, false);
         p->running = true;
-        if (multifd_channel_connect(p, sioc, local_err)) {
+        if (!multifd_channel_connect(p, sioc, local_err)) {
             goto cleanup;
         }
         return;
@@ -977,10 +987,11 @@ int multifd_load_cleanup(Error **errp)
     for (i = 0; i < migrate_multifd_channels(); i++) {
         MultiFDRecvParams *p = &multifd_recv_state->params[i];
 
-        if (object_dynamic_cast(OBJECT(p->c), TYPE_QIO_CHANNEL_SOCKET)
+        if ((object_dynamic_cast(OBJECT(p->c), TYPE_QIO_CHANNEL_SOCKET) ||
+             object_dynamic_cast(OBJECT(p->c), TYPE_QIO_CHANNEL_TLS))
             && OBJECT(p->c)->ref == 1) {
             yank_unregister_function(MIGRATION_YANK_INSTANCE,
-                                     yank_generic_iochannel,
+                                     migration_yank_iochannel,
                                      QIO_CHANNEL(p->c));
         }
 
@@ -1153,6 +1164,11 @@ bool multifd_recv_all_channels_created(void)
 
     if (!migrate_use_multifd()) {
         return true;
+    }
+
+    if (!multifd_recv_state) {
+        /* Called before any connections created */
+        return false;
     }
 
     return thread_count == qatomic_read(&multifd_recv_state->count);

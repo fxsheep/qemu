@@ -1,8 +1,10 @@
 FROM ubuntu:20.04
 ENV PACKAGES flex bison \
+    bsdmainutils \
     ccache \
     clang-10\
     gcc \
+    gcovr \
     genisoimage \
     gettext \
     git \
@@ -17,6 +19,7 @@ ENV PACKAGES flex bison \
     libdrm-dev \
     libepoxy-dev \
     libfdt-dev \
+    libffi-dev \
     libgbm-dev \
     libgtk-3-dev \
     libibverbs-dev \
@@ -56,6 +59,7 @@ ENV PACKAGES flex bison \
     python3-pil \
     python3-pip \
     python3-sphinx \
+    python3-sphinx-rtd-theme \
     python3-venv \
     python3-yaml \
     rpm2cpio \

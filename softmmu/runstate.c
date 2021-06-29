@@ -126,6 +126,7 @@ static const RunStateTransition runstate_transitions_def[] = {
     { RUN_STATE_RESTORE_VM, RUN_STATE_PRELAUNCH },
 
     { RUN_STATE_COLO, RUN_STATE_RUNNING },
+    { RUN_STATE_COLO, RUN_STATE_SHUTDOWN},
 
     { RUN_STATE_RUNNING, RUN_STATE_DEBUG },
     { RUN_STATE_RUNNING, RUN_STATE_INTERNAL_ERROR },
@@ -218,7 +219,7 @@ void runstate_set(RunState new_state)
     current_run_state = new_state;
 }
 
-int runstate_is_running(void)
+bool runstate_is_running(void)
 {
     return runstate_check(RUN_STATE_RUNNING);
 }
@@ -317,7 +318,7 @@ void qemu_del_vm_change_state_handler(VMChangeStateEntry *e)
     g_free(e);
 }
 
-void vm_state_notify(int running, RunState state)
+void vm_state_notify(bool running, RunState state)
 {
     VMChangeStateEntry *e, *next;
 
@@ -527,6 +528,9 @@ void qemu_system_reset_request(ShutdownCause reason)
 {
     if (reboot_action == REBOOT_ACTION_SHUTDOWN &&
         reason != SHUTDOWN_CAUSE_SUBSYSTEM_RESET) {
+        shutdown_requested = reason;
+    } else if (!cpus_are_resettable()) {
+        error_report("cpus are not resettable, terminating");
         shutdown_requested = reason;
     } else {
         reset_requested = reason;
@@ -743,7 +747,7 @@ static void qemu_run_exit_notifiers(void)
 
 void qemu_init_subsystems(void)
 {
-    Error *err;
+    Error *err = NULL;
 
     os_set_line_buffering();
 

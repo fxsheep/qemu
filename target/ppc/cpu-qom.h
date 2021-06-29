@@ -116,6 +116,8 @@ enum powerpc_excp_t {
     POWERPC_EXCP_POWER8,
     /* POWER9 exception model           */
     POWERPC_EXCP_POWER9,
+    /* POWER10 exception model           */
+    POWERPC_EXCP_POWER10,
 };
 
 /*****************************************************************************/
@@ -218,7 +220,7 @@ extern const VMStateDescription vmstate_ppc_timebase;
     .offset     = vmstate_offset_value(_state, _field, PPCTimebase),  \
 }
 
-void cpu_ppc_clock_vm_state_change(void *opaque, int running,
+void cpu_ppc_clock_vm_state_change(void *opaque, bool running,
                                    RunState state);
 #endif
 

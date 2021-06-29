@@ -277,6 +277,11 @@ static type name (type1 arg1,type2 arg2,type3 arg3,type4 arg4,type5 arg5,	\
 #define TARGET_NR__llseek TARGET_NR_llseek
 #endif
 
+/* some platforms need to mask more bits than just TARGET_O_NONBLOCK */
+#ifndef TARGET_O_NONBLOCK_MASK
+#define TARGET_O_NONBLOCK_MASK TARGET_O_NONBLOCK
+#endif
+
 #define __NR_sys_gettid __NR_gettid
 _syscall0(int, sys_gettid)
 
@@ -360,7 +365,7 @@ _syscall5(int, sys_statx, int, dirfd, const char *, pathname, int, flags,
 _syscall2(int, membarrier, int, cmd, int, flags)
 #endif
 
-static bitmask_transtbl fcntl_flags_tbl[] = {
+static const bitmask_transtbl fcntl_flags_tbl[] = {
   { TARGET_O_ACCMODE,   TARGET_O_WRONLY,    O_ACCMODE,   O_WRONLY,    },
   { TARGET_O_ACCMODE,   TARGET_O_RDWR,      O_ACCMODE,   O_RDWR,      },
   { TARGET_O_CREAT,     TARGET_O_CREAT,     O_CREAT,     O_CREAT,     },
@@ -889,6 +894,8 @@ abi_long do_brk(abi_ulong new_brk)
     abi_long mapped_addr;
     abi_ulong new_alloc_size;
 
+    /* brk pointers are always untagged */
+
     DEBUGF_BRK("do_brk(" TARGET_ABI_FMT_lx ") -> ", new_brk);
 
     if (!new_brk) {
@@ -907,7 +914,7 @@ abi_long do_brk(abi_ulong new_brk)
         /* Heap contents are initialized to zero, as for anonymous
          * mapped pages.  */
         if (new_brk > target_brk) {
-            memset(g2h(target_brk), 0, new_brk - target_brk);
+            memset(g2h_untagged(target_brk), 0, new_brk - target_brk);
         }
 	target_brk = new_brk;
         DEBUGF_BRK(TARGET_ABI_FMT_lx " (new_brk <= brk_page)\n", target_brk);
@@ -933,7 +940,7 @@ abi_long do_brk(abi_ulong new_brk)
          * come from the remaining part of the previous page: it may
          * contains garbage data due to a previous heap usage (grown
          * then shrunken).  */
-        memset(g2h(target_brk), 0, brk_page - target_brk);
+        memset(g2h_untagged(target_brk), 0, brk_page - target_brk);
 
         target_brk = new_brk;
         brk_page = HOST_PAGE_ALIGN(target_brk);
@@ -2832,6 +2839,12 @@ get_timeout:
         case TARGET_SO_ACCEPTCONN:
             optname = SO_ACCEPTCONN;
             goto int_case;
+        case TARGET_SO_PROTOCOL:
+            optname = SO_PROTOCOL;
+            goto int_case;
+        case TARGET_SO_DOMAIN:
+            optname = SO_DOMAIN;
+            goto int_case;
         default:
             goto int_case;
         }
@@ -3012,7 +3025,7 @@ get_timeout:
                 return -TARGET_EINVAL;
             }
             results = lock_user(VERIFY_WRITE, optval_addr, len, 1);
-            if (!results) {
+            if (!results && len > 0) {
                 return -TARGET_EFAULT;
             }
             lv = len;
@@ -3513,8 +3526,9 @@ static abi_long do_accept4(int fd, abi_ulong target_addr,
         return -TARGET_EINVAL;
     }
 
-    if (!access_ok(VERIFY_WRITE, target_addr, addrlen))
+    if (!access_ok(thread_cpu, VERIFY_WRITE, target_addr, addrlen)) {
         return -TARGET_EFAULT;
+    }
 
     addr = alloca(addrlen);
 
@@ -3544,8 +3558,9 @@ static abi_long do_getpeername(int fd, abi_ulong target_addr,
         return -TARGET_EINVAL;
     }
 
-    if (!access_ok(VERIFY_WRITE, target_addr, addrlen))
+    if (!access_ok(thread_cpu, VERIFY_WRITE, target_addr, addrlen)) {
         return -TARGET_EFAULT;
+    }
 
     addr = alloca(addrlen);
 
@@ -3575,8 +3590,9 @@ static abi_long do_getsockname(int fd, abi_ulong target_addr,
         return -TARGET_EINVAL;
     }
 
-    if (!access_ok(VERIFY_WRITE, target_addr, addrlen))
+    if (!access_ok(thread_cpu, VERIFY_WRITE, target_addr, addrlen)) {
         return -TARGET_EFAULT;
+    }
 
     addr = alloca(addrlen);
 
@@ -3663,9 +3679,14 @@ static abi_long do_recvfrom(int fd, abi_ulong msg, size_t len, int flags,
     void *host_msg;
     abi_long ret;
 
-    host_msg = lock_user(VERIFY_WRITE, msg, len, 0);
-    if (!host_msg)
-        return -TARGET_EFAULT;
+    if (!msg) {
+        host_msg = NULL;
+    } else {
+        host_msg = lock_user(VERIFY_WRITE, msg, len, 0);
+        if (!host_msg) {
+            return -TARGET_EFAULT;
+        }
+    }
     if (target_addr) {
         if (get_user_u32(addrlen, target_addrlen)) {
             ret = -TARGET_EFAULT;
@@ -4582,11 +4603,14 @@ static inline abi_ulong target_shmlba(CPUArchState *cpu_env)
 static inline abi_ulong do_shmat(CPUArchState *cpu_env,
                                  int shmid, abi_ulong shmaddr, int shmflg)
 {
+    CPUState *cpu = env_cpu(cpu_env);
     abi_long raddr;
     void *host_raddr;
     struct shmid_ds shm_info;
     int i,ret;
     abi_ulong shmlba;
+
+    /* shmat pointers are always untagged */
 
     /* find out the length of the shared memory segment */
     ret = get_errno(shmctl(shmid, IPC_STAT, &shm_info));
@@ -4604,14 +4628,25 @@ static inline abi_ulong do_shmat(CPUArchState *cpu_env,
             return -TARGET_EINVAL;
         }
     }
-    if (!guest_range_valid(shmaddr, shm_info.shm_segsz)) {
+    if (!guest_range_valid_untagged(shmaddr, shm_info.shm_segsz)) {
         return -TARGET_EINVAL;
     }
 
     mmap_lock();
 
+    /*
+     * We're mapping shared memory, so ensure we generate code for parallel
+     * execution and flush old translations.  This will work up to the level
+     * supported by the host -- anything that requires EXCP_ATOMIC will not
+     * be atomic with respect to an external process.
+     */
+    if (!(cpu->tcg_cflags & CF_PARALLEL)) {
+        cpu->tcg_cflags |= CF_PARALLEL;
+        tb_flush(cpu);
+    }
+
     if (shmaddr)
-        host_raddr = shmat(shmid, (void *)g2h(shmaddr), shmflg);
+        host_raddr = shmat(shmid, (void *)g2h_untagged(shmaddr), shmflg);
     else {
         abi_ulong mmap_start;
 
@@ -4622,7 +4657,8 @@ static inline abi_ulong do_shmat(CPUArchState *cpu_env,
             errno = ENOMEM;
             host_raddr = (void *)-1;
         } else
-            host_raddr = shmat(shmid, g2h(mmap_start), shmflg | SHM_REMAP);
+            host_raddr = shmat(shmid, g2h_untagged(mmap_start),
+                               shmflg | SHM_REMAP);
     }
 
     if (host_raddr == (void *)-1) {
@@ -4632,8 +4668,8 @@ static inline abi_ulong do_shmat(CPUArchState *cpu_env,
     raddr=h2g((unsigned long)host_raddr);
 
     page_set_flags(raddr, raddr + shm_info.shm_segsz,
-                   PAGE_VALID | PAGE_READ |
-                   ((shmflg & SHM_RDONLY)? 0 : PAGE_WRITE));
+                   PAGE_VALID | PAGE_RESET | PAGE_READ |
+                   (shmflg & SHM_RDONLY ? 0 : PAGE_WRITE));
 
     for (i = 0; i < N_SHM_REGIONS; i++) {
         if (!shm_regions[i].in_use) {
@@ -4654,6 +4690,8 @@ static inline abi_long do_shmdt(abi_ulong shmaddr)
     int i;
     abi_long rv;
 
+    /* shmdt pointers are always untagged */
+
     mmap_lock();
 
     for (i = 0; i < N_SHM_REGIONS; ++i) {
@@ -4663,7 +4701,7 @@ static inline abi_long do_shmdt(abi_ulong shmaddr)
             break;
         }
     }
-    rv = get_errno(shmdt(g2h(shmaddr)));
+    rv = get_errno(shmdt(g2h_untagged(shmaddr)));
 
     mmap_unlock();
 
@@ -4909,6 +4947,7 @@ static abi_long do_ioctl_ifconf(const IOCTLEntry *ie, uint8_t *buf_temp,
     struct ifconf *host_ifconf;
     uint32_t outbufsz;
     const argtype ifreq_arg_type[] = { MK_STRUCT(STRUCT_sockaddr_ifreq) };
+    const argtype ifreq_max_type[] = { MK_STRUCT(STRUCT_ifmap_ifreq) };
     int target_ifreq_size;
     int nb_ifreq;
     int free_buf = 0;
@@ -4932,7 +4971,7 @@ static abi_long do_ioctl_ifconf(const IOCTLEntry *ie, uint8_t *buf_temp,
 
     host_ifconf = (struct ifconf *)(unsigned long)buf_temp;
     target_ifc_buf = (abi_long)(unsigned long)host_ifconf->ifc_buf;
-    target_ifreq_size = thunk_type_size(ifreq_arg_type, 0);
+    target_ifreq_size = thunk_type_size(ifreq_max_type, 0);
 
     if (target_ifc_buf != 0) {
         target_ifc_len = host_ifconf->ifc_len;
@@ -6035,7 +6074,7 @@ static const StructEntry struct_termios_def = {
     .print = print_termios,
 };
 
-static bitmask_transtbl mmap_flags_tbl[] = {
+static const bitmask_transtbl mmap_flags_tbl[] = {
     { TARGET_MAP_SHARED, TARGET_MAP_SHARED, MAP_SHARED, MAP_SHARED },
     { TARGET_MAP_PRIVATE, TARGET_MAP_PRIVATE, MAP_PRIVATE, MAP_PRIVATE },
     { TARGET_MAP_FIXED, TARGET_MAP_FIXED, MAP_FIXED, MAP_FIXED },
@@ -6133,10 +6172,10 @@ static abi_long write_ldt(CPUX86State *env,
                                     MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
         if (env->ldt.base == -1)
             return -TARGET_ENOMEM;
-        memset(g2h(env->ldt.base), 0,
+        memset(g2h_untagged(env->ldt.base), 0,
                TARGET_LDT_ENTRIES * TARGET_LDT_ENTRY_SIZE);
         env->ldt.limit = 0xffff;
-        ldt_table = g2h(env->ldt.base);
+        ldt_table = g2h_untagged(env->ldt.base);
     }
 
     /* NOTE: same code as Linux kernel */
@@ -6204,7 +6243,7 @@ static abi_long do_modify_ldt(CPUX86State *env, int func, abi_ulong ptr,
 #if defined(TARGET_ABI32)
 abi_long do_set_thread_area(CPUX86State *env, abi_ulong ptr)
 {
-    uint64_t *gdt_table = g2h(env->gdt.base);
+    uint64_t *gdt_table = g2h_untagged(env->gdt.base);
     struct target_modify_ldt_ldt_s ldt_info;
     struct target_modify_ldt_ldt_s *target_ldt_info;
     int seg_32bit, contents, read_exec_only, limit_in_pages;
@@ -6290,7 +6329,7 @@ install:
 static abi_long do_get_thread_area(CPUX86State *env, abi_ulong ptr)
 {
     struct target_modify_ldt_ldt_s *target_ldt_info;
-    uint64_t *gdt_table = g2h(env->gdt.base);
+    uint64_t *gdt_table = g2h_untagged(env->gdt.base);
     uint32_t base_addr, limit, flags;
     int seg_32bit, contents, read_exec_only, limit_in_pages, idx;
     int seg_not_present, useable, lm;
@@ -6459,6 +6498,16 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
         /* Grab a mutex so that thread setup appears atomic.  */
         pthread_mutex_lock(&clone_lock);
 
+        /*
+         * If this is our first additional thread, we need to ensure we
+         * generate code for parallel execution and flush old translations.
+         * Do this now so that the copy gets CF_PARALLEL too.
+         */
+        if (!(cpu->tcg_cflags & CF_PARALLEL)) {
+            cpu->tcg_cflags |= CF_PARALLEL;
+            tb_flush(cpu);
+        }
+
         /* we create a new CPU instance. */
         new_env = cpu_copy(env);
         /* Init regs that differ from the parent.  */
@@ -6498,14 +6547,6 @@ static int do_fork(CPUArchState *env, unsigned int flags, abi_ulong newsp,
         sigfillset(&sigmask);
         sigprocmask(SIG_BLOCK, &sigmask, &info.sigmask);
         cpu->random_seed = qemu_guest_random_seed_thread_part1();
-
-        /* If this is our first additional thread, we need to ensure we
-         * generate code for parallel execution and flush old translations.
-         */
-        if (!parallel_cpus) {
-            parallel_cpus = true;
-            tb_flush(cpu);
-        }
 
         ret = pthread_create(&info.thread, &attr, clone_func, &info);
         /* TODO: Free new CPU state if thread creation failed.  */
@@ -7364,6 +7405,10 @@ static inline abi_long host_to_target_timex64(abi_long target_addr,
 }
 #endif
 
+#ifndef HAVE_SIGEV_NOTIFY_THREAD_ID
+#define sigev_notify_thread_id _sigev_un._tid
+#endif
+
 static inline abi_long target_to_host_sigevent(struct sigevent *host_sevp,
                                                abi_ulong target_addr)
 {
@@ -7384,7 +7429,7 @@ static inline abi_long target_to_host_sigevent(struct sigevent *host_sevp,
     host_sevp->sigev_signo =
         target_to_host_signal(tswap32(target_sevp->sigev_signo));
     host_sevp->sigev_notify = tswap32(target_sevp->sigev_notify);
-    host_sevp->_sigev_un._tid = tswap32(target_sevp->_sigev_un._tid);
+    host_sevp->sigev_notify_thread_id = tswap32(target_sevp->_sigev_un._tid);
 
     unlock_user_struct(target_sevp, target_addr, 1);
     return 0;
@@ -7441,7 +7486,7 @@ static inline abi_long host_to_target_stat64(void *cpu_env,
         __put_user(host_st->st_atime, &target_st->target_st_atime);
         __put_user(host_st->st_mtime, &target_st->target_st_mtime);
         __put_user(host_st->st_ctime, &target_st->target_st_ctime);
-#if _POSIX_C_SOURCE >= 200809L || _XOPEN_SOURCE >= 700
+#ifdef HAVE_STRUCT_STAT_ST_ATIM
         __put_user(host_st->st_atim.tv_nsec, &target_st->target_st_atime_nsec);
         __put_user(host_st->st_mtim.tv_nsec, &target_st->target_st_mtime_nsec);
         __put_user(host_st->st_ctim.tv_nsec, &target_st->target_st_ctime_nsec);
@@ -7476,7 +7521,7 @@ static inline abi_long host_to_target_stat64(void *cpu_env,
         __put_user(host_st->st_atime, &target_st->target_st_atime);
         __put_user(host_st->st_mtime, &target_st->target_st_mtime);
         __put_user(host_st->st_ctime, &target_st->target_st_ctime);
-#if _POSIX_C_SOURCE >= 200809L || _XOPEN_SOURCE >= 700
+#ifdef HAVE_STRUCT_STAT_ST_ATIM
         __put_user(host_st->st_atim.tv_nsec, &target_st->target_st_atime_nsec);
         __put_user(host_st->st_mtim.tv_nsec, &target_st->target_st_mtime_nsec);
         __put_user(host_st->st_ctim.tv_nsec, &target_st->target_st_ctime_nsec);
@@ -7585,8 +7630,8 @@ static int do_safe_futex(int *uaddr, int op, int val,
    tricky.  However they're probably useless because guest atomic
    operations won't work either.  */
 #if defined(TARGET_NR_futex)
-static int do_futex(target_ulong uaddr, int op, int val, target_ulong timeout,
-                    target_ulong uaddr2, int val3)
+static int do_futex(CPUState *cpu, target_ulong uaddr, int op, int val,
+                    target_ulong timeout, target_ulong uaddr2, int val3)
 {
     struct timespec ts, *pts;
     int base_op;
@@ -7607,11 +7652,14 @@ static int do_futex(target_ulong uaddr, int op, int val, target_ulong timeout,
         } else {
             pts = NULL;
         }
-        return do_safe_futex(g2h(uaddr), op, tswap32(val), pts, NULL, val3);
+        return do_safe_futex(g2h(cpu, uaddr),
+                             op, tswap32(val), pts, NULL, val3);
     case FUTEX_WAKE:
-        return do_safe_futex(g2h(uaddr), op, val, NULL, NULL, 0);
+        return do_safe_futex(g2h(cpu, uaddr),
+                             op, val, NULL, NULL, 0);
     case FUTEX_FD:
-        return do_safe_futex(g2h(uaddr), op, val, NULL, NULL, 0);
+        return do_safe_futex(g2h(cpu, uaddr),
+                             op, val, NULL, NULL, 0);
     case FUTEX_REQUEUE:
     case FUTEX_CMP_REQUEUE:
     case FUTEX_WAKE_OP:
@@ -7621,10 +7669,9 @@ static int do_futex(target_ulong uaddr, int op, int val, target_ulong timeout,
            to satisfy the compiler.  We do not need to tswap TIMEOUT
            since it's not compared to guest memory.  */
         pts = (struct timespec *)(uintptr_t) timeout;
-        return do_safe_futex(g2h(uaddr), op, val, pts, g2h(uaddr2),
+        return do_safe_futex(g2h(cpu, uaddr), op, val, pts, g2h(cpu, uaddr2),
                              (base_op == FUTEX_CMP_REQUEUE
-                                      ? tswap32(val3)
-                                      : val3));
+                              ? tswap32(val3) : val3));
     default:
         return -TARGET_ENOSYS;
     }
@@ -7632,7 +7679,8 @@ static int do_futex(target_ulong uaddr, int op, int val, target_ulong timeout,
 #endif
 
 #if defined(TARGET_NR_futex_time64)
-static int do_futex_time64(target_ulong uaddr, int op, int val, target_ulong timeout,
+static int do_futex_time64(CPUState *cpu, target_ulong uaddr, int op,
+                           int val, target_ulong timeout,
                            target_ulong uaddr2, int val3)
 {
     struct timespec ts, *pts;
@@ -7656,11 +7704,12 @@ static int do_futex_time64(target_ulong uaddr, int op, int val, target_ulong tim
         } else {
             pts = NULL;
         }
-        return do_safe_futex(g2h(uaddr), op, tswap32(val), pts, NULL, val3);
+        return do_safe_futex(g2h(cpu, uaddr), op,
+                             tswap32(val), pts, NULL, val3);
     case FUTEX_WAKE:
-        return do_safe_futex(g2h(uaddr), op, val, NULL, NULL, 0);
+        return do_safe_futex(g2h(cpu, uaddr), op, val, NULL, NULL, 0);
     case FUTEX_FD:
-        return do_safe_futex(g2h(uaddr), op, val, NULL, NULL, 0);
+        return do_safe_futex(g2h(cpu, uaddr), op, val, NULL, NULL, 0);
     case FUTEX_REQUEUE:
     case FUTEX_CMP_REQUEUE:
     case FUTEX_WAKE_OP:
@@ -7670,10 +7719,9 @@ static int do_futex_time64(target_ulong uaddr, int op, int val, target_ulong tim
            to satisfy the compiler.  We do not need to tswap TIMEOUT
            since it's not compared to guest memory.  */
         pts = (struct timespec *)(uintptr_t) timeout;
-        return do_safe_futex(g2h(uaddr), op, val, pts, g2h(uaddr2),
+        return do_safe_futex(g2h(cpu, uaddr), op, val, pts, g2h(cpu, uaddr2),
                              (base_op == FUTEX_CMP_REQUEUE
-                                      ? tswap32(val3)
-                                      : val3));
+                              ? tswap32(val3) : val3));
     default:
         return -TARGET_ENOSYS;
     }
@@ -7777,7 +7825,7 @@ static abi_long do_signalfd4(int fd, abi_long mask, int flags)
     sigset_t host_mask;
     abi_long ret;
 
-    if (flags & ~(TARGET_O_NONBLOCK | TARGET_O_CLOEXEC)) {
+    if (flags & ~(TARGET_O_NONBLOCK_MASK | TARGET_O_CLOEXEC)) {
         return -TARGET_EINVAL;
     }
     if (!lock_user_struct(VERIFY_READ, target_mask, mask, 1)) {
@@ -7848,7 +7896,7 @@ static int open_self_maps(void *cpu_env, int fd)
             const char *path;
 
             max = h2g_valid(max - 1) ?
-                max : (uintptr_t) g2h(GUEST_ADDR_MAX) + 1;
+                max : (uintptr_t) g2h_untagged(GUEST_ADDR_MAX) + 1;
 
             if (page_check_range(h2g(min), max - min, flags) == -1) {
                 continue;
@@ -7863,9 +7911,9 @@ static int open_self_maps(void *cpu_env, int fd)
             count = dprintf(fd, TARGET_ABI_FMT_ptr "-" TARGET_ABI_FMT_ptr
                             " %c%c%c%c %08" PRIx64 " %s %"PRId64,
                             h2g(min), h2g(max - 1) + 1,
-                            e->is_read ? 'r' : '-',
-                            e->is_write ? 'w' : '-',
-                            e->is_exec ? 'x' : '-',
+                            (flags & PAGE_READ) ? 'r' : '-',
+                            (flags & PAGE_WRITE_ORG) ? 'w' : '-',
+                            (flags & PAGE_EXEC) ? 'x' : '-',
                             e->is_priv ? 'p' : '-',
                             (uint64_t) e->offset, e->dev, e->inode);
             if (path) {
@@ -8213,6 +8261,10 @@ static int host_to_target_cpu_mask(const unsigned long *host_mask,
     return 0;
 }
 
+#if defined(TARGET_NR_pivot_root) && defined(__NR_pivot_root)
+_syscall2(int, pivot_root, const char *, new_root, const char *, put_old)
+#endif
+
 /* This is an internal helper for do_syscall so that it is easier
  * to have a single return point, so that actions, such as logging
  * of syscall results, can be performed.
@@ -8265,8 +8317,8 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 
             if (ts->child_tidptr) {
                 put_user_u32(0, ts->child_tidptr);
-                do_sys_futex(g2h(ts->child_tidptr), FUTEX_WAKE, INT_MAX,
-                          NULL, NULL, 0);
+                do_sys_futex(g2h(cpu, ts->child_tidptr),
+                             FUTEX_WAKE, INT_MAX, NULL, NULL, 0);
             }
             thread_cpu = NULL;
             g_free(ts);
@@ -8631,7 +8683,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
             if (!arg5) {
                 ret = mount(p, p2, p3, (unsigned long)arg4, NULL);
             } else {
-                ret = mount(p, p2, p3, (unsigned long)arg4, g2h(arg5));
+                ret = mount(p, p2, p3, (unsigned long)arg4, g2h(cpu, arg5));
             }
             ret = get_errno(ret);
 
@@ -8948,29 +9000,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #ifdef TARGET_NR_sigaction
     case TARGET_NR_sigaction:
         {
-#if defined(TARGET_ALPHA)
-            struct target_sigaction act, oact, *pact = 0;
-            struct target_old_sigaction *old_act;
-            if (arg2) {
-                if (!lock_user_struct(VERIFY_READ, old_act, arg2, 1))
-                    return -TARGET_EFAULT;
-                act._sa_handler = old_act->_sa_handler;
-                target_siginitset(&act.sa_mask, old_act->sa_mask);
-                act.sa_flags = old_act->sa_flags;
-                act.sa_restorer = 0;
-                unlock_user_struct(old_act, arg2, 0);
-                pact = &act;
-            }
-            ret = get_errno(do_sigaction(arg1, pact, &oact));
-            if (!is_error(ret) && arg3) {
-                if (!lock_user_struct(VERIFY_WRITE, old_act, arg3, 0))
-                    return -TARGET_EFAULT;
-                old_act->_sa_handler = oact._sa_handler;
-                old_act->sa_mask = oact.sa_mask.sig[0];
-                old_act->sa_flags = oact.sa_flags;
-                unlock_user_struct(old_act, arg3, 1);
-            }
-#elif defined(TARGET_MIPS)
+#if defined(TARGET_MIPS)
 	    struct target_sigaction act, oact, *pact, *old_act;
 
 	    if (arg2) {
@@ -8985,7 +9015,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 		pact = NULL;
 	    }
 
-	    ret = get_errno(do_sigaction(arg1, pact, &oact));
+        ret = get_errno(do_sigaction(arg1, pact, &oact, 0));
 
 	    if (!is_error(ret) && arg3) {
                 if (!lock_user_struct(VERIFY_WRITE, old_act, arg3, 0))
@@ -9007,23 +9037,24 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 act._sa_handler = old_act->_sa_handler;
                 target_siginitset(&act.sa_mask, old_act->sa_mask);
                 act.sa_flags = old_act->sa_flags;
+#ifdef TARGET_ARCH_HAS_SA_RESTORER
                 act.sa_restorer = old_act->sa_restorer;
-#ifdef TARGET_ARCH_HAS_KA_RESTORER
-                act.ka_restorer = 0;
 #endif
                 unlock_user_struct(old_act, arg2, 0);
                 pact = &act;
             } else {
                 pact = NULL;
             }
-            ret = get_errno(do_sigaction(arg1, pact, &oact));
+            ret = get_errno(do_sigaction(arg1, pact, &oact, 0));
             if (!is_error(ret) && arg3) {
                 if (!lock_user_struct(VERIFY_WRITE, old_act, arg3, 0))
                     return -TARGET_EFAULT;
                 old_act->_sa_handler = oact._sa_handler;
                 old_act->sa_mask = oact.sa_mask.sig[0];
                 old_act->sa_flags = oact.sa_flags;
+#ifdef TARGET_ARCH_HAS_SA_RESTORER
                 old_act->sa_restorer = oact.sa_restorer;
+#endif
                 unlock_user_struct(old_act, arg3, 1);
             }
 #endif
@@ -9032,77 +9063,43 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #endif
     case TARGET_NR_rt_sigaction:
         {
-#if defined(TARGET_ALPHA)
-            /* For Alpha and SPARC this is a 5 argument syscall, with
+            /*
+             * For Alpha and SPARC this is a 5 argument syscall, with
              * a 'restorer' parameter which must be copied into the
              * sa_restorer field of the sigaction struct.
              * For Alpha that 'restorer' is arg5; for SPARC it is arg4,
              * and arg5 is the sigsetsize.
-             * Alpha also has a separate rt_sigaction struct that it uses
-             * here; SPARC uses the usual sigaction struct.
              */
-            struct target_rt_sigaction *rt_act;
-            struct target_sigaction act, oact, *pact = 0;
-
-            if (arg4 != sizeof(target_sigset_t)) {
-                return -TARGET_EINVAL;
-            }
-            if (arg2) {
-                if (!lock_user_struct(VERIFY_READ, rt_act, arg2, 1))
-                    return -TARGET_EFAULT;
-                act._sa_handler = rt_act->_sa_handler;
-                act.sa_mask = rt_act->sa_mask;
-                act.sa_flags = rt_act->sa_flags;
-                act.sa_restorer = arg5;
-                unlock_user_struct(rt_act, arg2, 0);
-                pact = &act;
-            }
-            ret = get_errno(do_sigaction(arg1, pact, &oact));
-            if (!is_error(ret) && arg3) {
-                if (!lock_user_struct(VERIFY_WRITE, rt_act, arg3, 0))
-                    return -TARGET_EFAULT;
-                rt_act->_sa_handler = oact._sa_handler;
-                rt_act->sa_mask = oact.sa_mask;
-                rt_act->sa_flags = oact.sa_flags;
-                unlock_user_struct(rt_act, arg3, 1);
-            }
-#else
-#ifdef TARGET_SPARC
+#if defined(TARGET_ALPHA)
+            target_ulong sigsetsize = arg4;
+            target_ulong restorer = arg5;
+#elif defined(TARGET_SPARC)
             target_ulong restorer = arg4;
             target_ulong sigsetsize = arg5;
 #else
             target_ulong sigsetsize = arg4;
+            target_ulong restorer = 0;
 #endif
-            struct target_sigaction *act;
-            struct target_sigaction *oact;
+            struct target_sigaction *act = NULL;
+            struct target_sigaction *oact = NULL;
 
             if (sigsetsize != sizeof(target_sigset_t)) {
                 return -TARGET_EINVAL;
             }
-            if (arg2) {
-                if (!lock_user_struct(VERIFY_READ, act, arg2, 1)) {
-                    return -TARGET_EFAULT;
-                }
-#ifdef TARGET_ARCH_HAS_KA_RESTORER
-                act->ka_restorer = restorer;
-#endif
-            } else {
-                act = NULL;
+            if (arg2 && !lock_user_struct(VERIFY_READ, act, arg2, 1)) {
+                return -TARGET_EFAULT;
             }
-            if (arg3) {
-                if (!lock_user_struct(VERIFY_WRITE, oact, arg3, 0)) {
-                    ret = -TARGET_EFAULT;
-                    goto rt_sigaction_fail;
+            if (arg3 && !lock_user_struct(VERIFY_WRITE, oact, arg3, 0)) {
+                ret = -TARGET_EFAULT;
+            } else {
+                ret = get_errno(do_sigaction(arg1, act, oact, restorer));
+                if (oact) {
+                    unlock_user_struct(oact, arg3, 1);
                 }
-            } else
-                oact = NULL;
-            ret = get_errno(do_sigaction(arg1, act, oact));
-	rt_sigaction_fail:
-            if (act)
+            }
+            if (act) {
                 unlock_user_struct(act, arg2, 0);
-            if (oact)
-                unlock_user_struct(oact, arg3, 1);
-#endif
+            }
         }
         return ret;
 #ifdef TARGET_NR_sgetmask /* not on alpha */
@@ -9687,6 +9684,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                                         v5, v6));
         }
 #else
+        /* mmap pointers are always untagged */
         ret = get_errno(target_mmap(arg1, arg2, arg3,
                                     target_to_host_bitmask(arg4, mmap_flags_tbl),
                                     arg5,
@@ -9705,8 +9703,10 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
         return get_errno(ret);
 #endif
     case TARGET_NR_munmap:
+        arg1 = cpu_untagged_addr(cpu, arg1);
         return get_errno(target_munmap(arg1, arg2));
     case TARGET_NR_mprotect:
+        arg1 = cpu_untagged_addr(cpu, arg1);
         {
             TaskState *ts = cpu->opaque;
             /* Special hack to detect libc making the stack executable.  */
@@ -9721,20 +9721,22 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
         return get_errno(target_mprotect(arg1, arg2, arg3));
 #ifdef TARGET_NR_mremap
     case TARGET_NR_mremap:
+        arg1 = cpu_untagged_addr(cpu, arg1);
+        /* mremap new_addr (arg5) is always untagged */
         return get_errno(target_mremap(arg1, arg2, arg3, arg4, arg5));
 #endif
         /* ??? msync/mlock/munlock are broken for softmmu.  */
 #ifdef TARGET_NR_msync
     case TARGET_NR_msync:
-        return get_errno(msync(g2h(arg1), arg2, arg3));
+        return get_errno(msync(g2h(cpu, arg1), arg2, arg3));
 #endif
 #ifdef TARGET_NR_mlock
     case TARGET_NR_mlock:
-        return get_errno(mlock(g2h(arg1), arg2));
+        return get_errno(mlock(g2h(cpu, arg1), arg2));
 #endif
 #ifdef TARGET_NR_munlock
     case TARGET_NR_munlock:
-        return get_errno(munlock(g2h(arg1), arg2));
+        return get_errno(munlock(g2h(cpu, arg1), arg2));
 #endif
 #ifdef TARGET_NR_mlockall
     case TARGET_NR_mlockall:
@@ -10074,8 +10076,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 __put_user(st.st_atime, &target_st->target_st_atime);
                 __put_user(st.st_mtime, &target_st->target_st_mtime);
                 __put_user(st.st_ctime, &target_st->target_st_ctime);
-#if (_POSIX_C_SOURCE >= 200809L || _XOPEN_SOURCE >= 700) && \
-    defined(TARGET_STAT_HAVE_NSEC)
+#if defined(HAVE_STRUCT_STAT_ST_ATIM) && defined(TARGET_STAT_HAVE_NSEC)
                 __put_user(st.st_atim.tv_nsec,
                            &target_st->target_st_atime_nsec);
                 __put_user(st.st_mtim.tv_nsec,
@@ -10963,6 +10964,73 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 }
             }
             return -TARGET_EINVAL;
+        case TARGET_PR_SET_TAGGED_ADDR_CTRL:
+            {
+                abi_ulong valid_mask = TARGET_PR_TAGGED_ADDR_ENABLE;
+                CPUARMState *env = cpu_env;
+                ARMCPU *cpu = env_archcpu(env);
+
+                if (cpu_isar_feature(aa64_mte, cpu)) {
+                    valid_mask |= TARGET_PR_MTE_TCF_MASK;
+                    valid_mask |= TARGET_PR_MTE_TAG_MASK;
+                }
+
+                if ((arg2 & ~valid_mask) || arg3 || arg4 || arg5) {
+                    return -TARGET_EINVAL;
+                }
+                env->tagged_addr_enable = arg2 & TARGET_PR_TAGGED_ADDR_ENABLE;
+
+                if (cpu_isar_feature(aa64_mte, cpu)) {
+                    switch (arg2 & TARGET_PR_MTE_TCF_MASK) {
+                    case TARGET_PR_MTE_TCF_NONE:
+                    case TARGET_PR_MTE_TCF_SYNC:
+                    case TARGET_PR_MTE_TCF_ASYNC:
+                        break;
+                    default:
+                        return -EINVAL;
+                    }
+
+                    /*
+                     * Write PR_MTE_TCF to SCTLR_EL1[TCF0].
+                     * Note that the syscall values are consistent with hw.
+                     */
+                    env->cp15.sctlr_el[1] =
+                        deposit64(env->cp15.sctlr_el[1], 38, 2,
+                                  arg2 >> TARGET_PR_MTE_TCF_SHIFT);
+
+                    /*
+                     * Write PR_MTE_TAG to GCR_EL1[Exclude].
+                     * Note that the syscall uses an include mask,
+                     * and hardware uses an exclude mask -- invert.
+                     */
+                    env->cp15.gcr_el1 =
+                        deposit64(env->cp15.gcr_el1, 0, 16,
+                                  ~arg2 >> TARGET_PR_MTE_TAG_SHIFT);
+                    arm_rebuild_hflags(env);
+                }
+                return 0;
+            }
+        case TARGET_PR_GET_TAGGED_ADDR_CTRL:
+            {
+                abi_long ret = 0;
+                CPUARMState *env = cpu_env;
+                ARMCPU *cpu = env_archcpu(env);
+
+                if (arg2 || arg3 || arg4 || arg5) {
+                    return -TARGET_EINVAL;
+                }
+                if (env->tagged_addr_enable) {
+                    ret |= TARGET_PR_TAGGED_ADDR_ENABLE;
+                }
+                if (cpu_isar_feature(aa64_mte, cpu)) {
+                    /* See above. */
+                    ret |= (extract64(env->cp15.sctlr_el[1], 38, 2)
+                            << TARGET_PR_MTE_TCF_SHIFT);
+                    ret = deposit64(ret, TARGET_PR_MTE_TAG_SHIFT, 16,
+                                    ~env->cp15.gcr_el1);
+                }
+                return ret;
+            }
 #endif /* AARCH64 */
         case PR_GET_SECCOMP:
         case PR_SET_SECCOMP:
@@ -11091,8 +11159,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
         return ret;
     }
     case TARGET_NR_sigaltstack:
-        return do_sigaltstack(arg1, arg2,
-                              get_sp_from_cpustate((CPUArchState *)cpu_env));
+        return do_sigaltstack(arg1, arg2, cpu_env);
 
 #ifdef CONFIG_SENDFILE
 #ifdef TARGET_NR_sendfile
@@ -12225,7 +12292,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 
 #if defined(TARGET_NR_set_tid_address) && defined(__NR_set_tid_address)
     case TARGET_NR_set_tid_address:
-        return get_errno(set_tid_address((int *)g2h(arg1)));
+        return get_errno(set_tid_address((int *)g2h(cpu, arg1)));
 #endif
 
     case TARGET_NR_tkill:
@@ -12312,11 +12379,11 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #endif
 #ifdef TARGET_NR_futex
     case TARGET_NR_futex:
-        return do_futex(arg1, arg2, arg3, arg4, arg5, arg6);
+        return do_futex(cpu, arg1, arg2, arg3, arg4, arg5, arg6);
 #endif
 #ifdef TARGET_NR_futex_time64
     case TARGET_NR_futex_time64:
-        return do_futex_time64(arg1, arg2, arg3, arg4, arg5, arg6);
+        return do_futex_time64(cpu, arg1, arg2, arg3, arg4, arg5, arg6);
 #endif
 #if defined(TARGET_NR_inotify_init) && defined(__NR_inotify_init)
     case TARGET_NR_inotify_init:
@@ -12566,7 +12633,7 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
 #if defined(TARGET_NR_eventfd2)
     case TARGET_NR_eventfd2:
     {
-        int host_flags = arg2 & (~(TARGET_O_NONBLOCK | TARGET_O_CLOEXEC));
+        int host_flags = arg2 & (~(TARGET_O_NONBLOCK_MASK | TARGET_O_CLOEXEC));
         if (arg2 & TARGET_O_NONBLOCK) {
             host_flags |= O_NONBLOCK;
         }
@@ -13141,8 +13208,9 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                 }
                 poutoff = &outoff;
             }
+            /* Do not sign-extend the count parameter. */
             ret = get_errno(safe_copy_file_range(arg1, pinoff, arg3, poutoff,
-                                                 arg5, arg6));
+                                                 (abi_ulong)arg5, arg6));
             if (!is_error(ret) && ret > 0) {
                 if (arg2) {
                     if (put_user_u64(inoff, arg2)) {
@@ -13155,6 +13223,23 @@ static abi_long do_syscall1(void *cpu_env, int num, abi_long arg1,
                     }
                 }
             }
+        }
+        return ret;
+#endif
+
+#if defined(TARGET_NR_pivot_root)
+    case TARGET_NR_pivot_root:
+        {
+            void *p2;
+            p = lock_user_string(arg1); /* new_root */
+            p2 = lock_user_string(arg2); /* put_old */
+            if (!p || !p2) {
+                ret = -TARGET_EFAULT;
+            } else {
+                ret = get_errno(pivot_root(p, p2));
+            }
+            unlock_user(p2, arg2, 0);
+            unlock_user(p, arg1, 0);
         }
         return ret;
 #endif

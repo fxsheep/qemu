@@ -417,11 +417,8 @@ static bool patch_reloc(tcg_insn_unit *src_rw, int type,
 }
 
 /* Test if a constant matches the constraint. */
-static int tcg_target_const_match(tcg_target_long val, TCGType type,
-                                  const TCGArgConstraint *arg_ct)
+static bool tcg_target_const_match(int64_t val, TCGType type, int ct)
 {
-    int ct = arg_ct->ct;
-
     if (ct & TCG_CT_CONST) {
         return 1;
     }
@@ -1705,7 +1702,8 @@ static void tcg_out_qemu_st(TCGContext* s, TCGReg data_reg, TCGReg addr_reg,
         case glue(glue(INDEX_op_,x),_i64)
 
 static inline void tcg_out_op(TCGContext *s, TCGOpcode opc,
-                const TCGArg *args, const int *const_args)
+                              const TCGArg args[TCG_MAX_OP_ARGS],
+                              const int const_args[TCG_MAX_OP_ARGS])
 {
     S390Opcode op, op2;
     TCGArg a0, a1, a2;

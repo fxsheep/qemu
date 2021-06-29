@@ -154,14 +154,11 @@ static int cap_async_pf;
 static int cap_mem_op;
 static int cap_s390_irq;
 static int cap_ri;
-static int cap_gs;
 static int cap_hpage_1m;
 static int cap_vcpu_resets;
 static int cap_protected;
 
 static int active_cmma;
-
-static void *legacy_s390_alloc(size_t size, uint64_t *align, bool shared);
 
 static int kvm_s390_query_mem_limit(uint64_t *memory_limit)
 {
@@ -349,6 +346,11 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
                      "please use kernel 3.15 or newer");
         return -1;
     }
+    if (!kvm_check_extension(s, KVM_CAP_S390_COW)) {
+        error_report("KVM is missing capability KVM_CAP_S390_COW - "
+                     "unsupported environment");
+        return -1;
+    }
 
     cap_sync_regs = kvm_check_extension(s, KVM_CAP_SYNC_REGS);
     cap_async_pf = kvm_check_extension(s, KVM_CAP_ASYNC_PF);
@@ -356,11 +358,6 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
     cap_s390_irq = kvm_check_extension(s, KVM_CAP_S390_INJECT_IRQ);
     cap_vcpu_resets = kvm_check_extension(s, KVM_CAP_S390_VCPU_RESETS);
     cap_protected = kvm_check_extension(s, KVM_CAP_S390_PROTECTED);
-
-    if (!kvm_check_extension(s, KVM_CAP_S390_GMAP)
-        || !kvm_check_extension(s, KVM_CAP_S390_COW)) {
-        phys_mem_set_alloc(legacy_s390_alloc);
-    }
 
     kvm_vm_enable_cap(s, KVM_CAP_S390_USER_SIGP, 0);
     kvm_vm_enable_cap(s, KVM_CAP_S390_VECTOR_REGISTERS, 0);
@@ -371,9 +368,7 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
         }
     }
     if (cpu_model_allowed()) {
-        if (kvm_vm_enable_cap(s, KVM_CAP_S390_GS, 0) == 0) {
-            cap_gs = 1;
-        }
+        kvm_vm_enable_cap(s, KVM_CAP_S390_GS, 0);
     }
 
     /*
@@ -887,37 +882,6 @@ int kvm_s390_mem_op_pv(S390CPU *cpu, uint64_t offset, void *hostbuf,
         abort();
     }
     return ret;
-}
-
-/*
- * Legacy layout for s390:
- * Older S390 KVM requires the topmost vma of the RAM to be
- * smaller than an system defined value, which is at least 256GB.
- * Larger systems have larger values. We put the guest between
- * the end of data segment (system break) and this value. We
- * use 32GB as a base to have enough room for the system break
- * to grow. We also have to use MAP parameters that avoid
- * read-only mapping of guest pages.
- */
-static void *legacy_s390_alloc(size_t size, uint64_t *align, bool shared)
-{
-    static void *mem;
-
-    if (mem) {
-        /* we only support one allocation, which is enough for initial ram */
-        return NULL;
-    }
-
-    mem = mmap((void *) 0x800000000ULL, size,
-               PROT_EXEC|PROT_READ|PROT_WRITE,
-               MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-    if (mem == MAP_FAILED) {
-        mem = NULL;
-    }
-    if (mem && align) {
-        *align = QEMU_VMALLOC_ALIGN;
-    }
-    return mem;
 }
 
 static uint8_t const *sw_bp_inst;
@@ -1785,8 +1749,7 @@ static int handle_intercept(S390CPU *cpu)
     int icpt_code = run->s390_sieic.icptcode;
     int r = 0;
 
-    DPRINTF("intercept: 0x%x (at 0x%lx)\n", icpt_code,
-            (long)cs->kvm_run->psw_addr);
+    DPRINTF("intercept: 0x%x (at 0x%lx)\n", icpt_code, (long)run->psw_addr);
     switch (icpt_code) {
         case ICPT_INSTRUCTION:
         case ICPT_PV_INSTR:
@@ -2071,11 +2034,6 @@ int kvm_s390_assign_subch_ioeventfd(EventNotifier *notifier, uint32_t sch,
 int kvm_s390_get_ri(void)
 {
     return cap_ri;
-}
-
-int kvm_s390_get_gs(void)
-{
-    return cap_gs;
 }
 
 int kvm_s390_set_cpu_state(S390CPU *cpu, uint8_t cpu_state)
@@ -2598,4 +2556,9 @@ void kvm_s390_stop_interrupt(S390CPU *cpu)
     };
 
     kvm_s390_vcpu_interrupt(cpu, &irq);
+}
+
+bool kvm_arch_cpu_check_are_resettable(void)
+{
+    return true;
 }

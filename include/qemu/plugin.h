@@ -79,7 +79,6 @@ enum plugin_dyn_cb_subtype {
 struct qemu_plugin_dyn_cb {
     union qemu_plugin_cb_sig f;
     void *userp;
-    unsigned tcg_flags;
     enum plugin_dyn_cb_subtype type;
     /* @rw applies to mem callbacks only (both regular and inline) */
     enum qemu_plugin_mem_rw rw;
@@ -92,6 +91,7 @@ struct qemu_plugin_dyn_cb {
     };
 };
 
+/* Internal context for instrumenting an instruction */
 struct qemu_plugin_insn {
     GByteArray *data;
     uint64_t vaddr;
@@ -99,6 +99,7 @@ struct qemu_plugin_insn {
     GArray *cbs[PLUGIN_N_CB_TYPES][PLUGIN_N_CB_SUBTYPES];
     bool calls_helpers;
     bool mem_helper;
+    bool mem_only;
 };
 
 /*
@@ -128,6 +129,7 @@ static inline struct qemu_plugin_insn *qemu_plugin_insn_alloc(void)
     return insn;
 }
 
+/* Internal context for this TranslationBlock */
 struct qemu_plugin_tb {
     GPtrArray *insns;
     size_t n;
@@ -135,6 +137,7 @@ struct qemu_plugin_tb {
     uint64_t vaddr2;
     void *haddr1;
     void *haddr2;
+    bool mem_only;
     GArray *cbs[PLUGIN_N_CB_SUBTYPES];
 };
 

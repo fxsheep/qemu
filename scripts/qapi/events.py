@@ -12,7 +12,7 @@ This work is licensed under the terms of the GNU GPL, version 2.
 See the COPYING file in the top-level directory.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from .common import c_enum_const, c_name, mcgen
 from .gen import QAPISchemaModularCVisitor, build_params, ifcontext
@@ -79,6 +79,7 @@ def gen_param_var(typ: QAPISchemaObjectType) -> str:
 
 def gen_event_send(name: str,
                    arg_type: Optional[QAPISchemaObjectType],
+                   features: List[QAPISchemaFeature],
                    boxed: bool,
                    event_enum_name: str,
                    event_emit: str) -> str:
@@ -107,6 +108,14 @@ def gen_event_send(name: str,
         if not boxed:
             ret += gen_param_var(arg_type)
 
+    if 'deprecated' in [f.name for f in features]:
+        ret += mcgen('''
+
+    if (compat_policy.deprecated_output == COMPAT_POLICY_OUTPUT_HIDE) {
+        return;
+    }
+''')
+
     ret += mcgen('''
 
     qmp = qmp_event_build_dict("%(name)s");
@@ -117,7 +126,7 @@ def gen_event_send(name: str,
     if have_args:
         assert arg_type is not None
         ret += mcgen('''
-    v = qobject_output_visitor_new(&obj);
+    v = qobject_output_visitor_new_qmp(&obj);
 ''')
         if not arg_type.is_implicit():
             ret += mcgen('''
@@ -136,7 +145,11 @@ def gen_event_send(name: str,
         ret += mcgen('''
 
     visit_complete(v, &obj);
-    qdict_put_obj(qmp, "data", obj);
+    if (qdict_size(qobject_to(QDict, obj))) {
+        qdict_put_obj(qmp, "data", obj);
+    } else {
+        qobject_unref(obj);
+    }
 ''')
 
     ret += mcgen('''
@@ -176,9 +189,9 @@ class QAPISchemaGenEventVisitor(QAPISchemaModularCVisitor):
 #include "%(prefix)sqapi-emit-events.h"
 #include "%(events)s.h"
 #include "%(visit)s.h"
+#include "qapi/compat-policy.h"
 #include "qapi/error.h"
 #include "qapi/qmp/qdict.h"
-#include "qapi/qobject-output-visitor.h"
 #include "qapi/qmp-event.h"
 
 ''',
@@ -214,13 +227,13 @@ void %(event_emit)s(%(event_enum)s event, QDict *qdict);
     def visit_event(self,
                     name: str,
                     info: Optional[QAPISourceInfo],
-                    ifcond: List[str],
+                    ifcond: Sequence[str],
                     features: List[QAPISchemaFeature],
                     arg_type: Optional[QAPISchemaObjectType],
                     boxed: bool) -> None:
         with ifcontext(ifcond, self._genh, self._genc):
             self._genh.add(gen_event_send_decl(name, arg_type, boxed))
-            self._genc.add(gen_event_send(name, arg_type, boxed,
+            self._genc.add(gen_event_send(name, arg_type, features, boxed,
                                           self._event_enum_name,
                                           self._event_emit_name))
         # Note: we generate the enum member regardless of @ifcond, to

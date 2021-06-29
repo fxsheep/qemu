@@ -23,6 +23,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
 
 #include "net/net.h"
 #include "clients.h"
@@ -43,16 +44,15 @@
 #include "qemu/cutils.h"
 #include "qemu/config-file.h"
 #include "qemu/ctype.h"
+#include "qemu/id.h"
 #include "qemu/iov.h"
 #include "qemu/qemu-print.h"
 #include "qemu/main-loop.h"
 #include "qemu/option.h"
 #include "qapi/error.h"
 #include "qapi/opts-visitor.h"
-#include "sysemu/sysemu.h"
-#include "sysemu/qtest.h"
 #include "sysemu/runstate.h"
-#include "sysemu/sysemu.h"
+#include "net/colo-compare.h"
 #include "net/filter.h"
 #include "qapi/string-output-visitor.h"
 
@@ -528,6 +528,17 @@ int qemu_set_vnet_be(NetClientState *nc, bool is_be)
 #endif
 }
 
+int qemu_can_receive_packet(NetClientState *nc)
+{
+    if (nc->receive_disabled) {
+        return 0;
+    } else if (nc->info->can_receive &&
+               !nc->info->can_receive(nc)) {
+        return 0;
+    }
+    return 1;
+}
+
 int qemu_can_send_packet(NetClientState *sender)
 {
     int vm_running = runstate_is_running();
@@ -540,13 +551,7 @@ int qemu_can_send_packet(NetClientState *sender)
         return 1;
     }
 
-    if (sender->peer->receive_disabled) {
-        return 0;
-    } else if (sender->peer->info->can_receive &&
-               !sender->peer->info->can_receive(sender->peer)) {
-        return 0;
-    }
-    return 1;
+    return qemu_can_receive_packet(sender->peer);
 }
 
 static ssize_t filter_receive_iov(NetClientState *nc,
@@ -677,6 +682,25 @@ ssize_t qemu_send_packet_async(NetClientState *sender,
 ssize_t qemu_send_packet(NetClientState *nc, const uint8_t *buf, int size)
 {
     return qemu_send_packet_async(nc, buf, size, NULL);
+}
+
+ssize_t qemu_receive_packet(NetClientState *nc, const uint8_t *buf, int size)
+{
+    if (!qemu_can_receive_packet(nc)) {
+        return 0;
+    }
+
+    return qemu_net_queue_receive(nc->incoming_queue, buf, size);
+}
+
+ssize_t qemu_receive_packet_iov(NetClientState *nc, const struct iovec *iov,
+                                int iovcnt)
+{
+    if (!qemu_can_receive_packet(nc)) {
+        return 0;
+    }
+
+    return qemu_net_queue_receive_iov(nc->incoming_queue, iov, iovcnt);
 }
 
 ssize_t qemu_send_packet_raw(NetClientState *nc, const uint8_t *buf, int size)
@@ -1111,8 +1135,7 @@ static int net_client_init(QemuOpts *opts, bool is_netdev, Error **errp)
 
     /* Create an ID for -net if the user did not specify one */
     if (!is_netdev && !qemu_opts_id(opts)) {
-        static int idx;
-        qemu_opts_set_id(opts, g_strdup_printf("__org.qemu.net%i", idx++));
+        qemu_opts_set_id(opts, id_generate(ID_NET));
     }
 
     if (visit_type_Netdev(v, NULL, &object, errp)) {
@@ -1134,6 +1157,11 @@ void netdev_add(QemuOpts *opts, Error **errp)
 
 void qmp_netdev_add(Netdev *netdev, Error **errp)
 {
+    if (!id_wellformed(netdev->id)) {
+        error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "id", "an identifier");
+        return;
+    }
+
     net_client_init1(netdev, true, errp);
 }
 
@@ -1350,7 +1378,7 @@ void qmp_set_link(const char *name, bool up, Error **errp)
     }
 }
 
-static void net_vm_change_state_handler(void *opaque, int running,
+static void net_vm_change_state_handler(void *opaque, bool running,
                                         RunState state)
 {
     NetClientState *nc;
@@ -1374,6 +1402,9 @@ static void net_vm_change_state_handler(void *opaque, int running,
 void net_cleanup(void)
 {
     NetClientState *nc;
+
+    /*cleanup colo compare module for COLO*/
+    colo_compare_cleanup();
 
     /* We may del multiple entries during qemu_del_net_client(),
      * so QTAILQ_FOREACH_SAFE() is also not safe here.
@@ -1467,7 +1498,7 @@ static int net_param_nic(void *dummy, QemuOpts *opts, Error **errp)
     /* Create an ID if the user did not specify one */
     nd_id = g_strdup(qemu_opts_id(opts));
     if (!nd_id) {
-        nd_id = g_strdup_printf("__org.qemu.nic%i", idx);
+        nd_id = id_generate(ID_NET);
         qemu_opts_set_id(opts, nd_id);
     }
 

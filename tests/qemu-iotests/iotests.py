@@ -17,27 +17,28 @@
 #
 
 import atexit
+import bz2
 from collections import OrderedDict
 import faulthandler
-import io
 import json
 import logging
 import os
 import re
+import shutil
 import signal
 import struct
 import subprocess
 import sys
 import time
 from typing import (Any, Callable, Dict, Iterable,
-                    List, Optional, Sequence, Tuple, TypeVar)
+                    List, Optional, Sequence, TextIO, Tuple, Type, TypeVar)
 import unittest
 
 from contextlib import contextmanager
 
 # pylint: disable=import-error, wrong-import-position
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', 'python'))
-from qemu import qtest
+from qemu.machine import qtest
 from qemu.qmp import QMPMessage
 
 # Use this logger for logging messages directly from the iotests module
@@ -96,6 +97,14 @@ luks_default_secret_object = 'secret,id=keysec0,data=' + \
                              os.environ.get('IMGKEYSECRET', '')
 luks_default_key_secret_opt = 'key-secret=keysec0'
 
+sample_img_dir = os.environ['SAMPLE_IMG_DIR']
+
+
+def unarchive_sample_image(sample, fname):
+    sample_fname = os.path.join(sample_img_dir, sample + '.bz2')
+    with bz2.open(sample_fname) as f_in, open(fname, 'wb') as f_out:
+        shutil.copyfileobj(f_in, f_out)
+
 
 def qemu_tool_pipe_and_status(tool: str, args: Sequence[str],
                               connect_stderr: bool = True) -> Tuple[str, int]:
@@ -103,15 +112,14 @@ def qemu_tool_pipe_and_status(tool: str, args: Sequence[str],
     Run a tool and return both its output and its exit code
     """
     stderr = subprocess.STDOUT if connect_stderr else None
-    subp = subprocess.Popen(args,
-                            stdout=subprocess.PIPE,
-                            stderr=stderr,
-                            universal_newlines=True)
-    output = subp.communicate()[0]
-    if subp.returncode < 0:
-        cmd = ' '.join(args)
-        sys.stderr.write(f'{tool} received signal {-subp.returncode}: {cmd}\n')
-    return (output, subp.returncode)
+    with subprocess.Popen(args, stdout=subprocess.PIPE,
+                          stderr=stderr, universal_newlines=True) as subp:
+        output = subp.communicate()[0]
+        if subp.returncode < 0:
+            cmd = ' '.join(args)
+            sys.stderr.write(f'{tool} received signal \
+                               {-subp.returncode}: {cmd}\n')
+        return (output, subp.returncode)
 
 def qemu_img_pipe_and_status(*args: str) -> Tuple[str, int]:
     """
@@ -224,14 +232,12 @@ def qemu_io_silent_check(*args):
                                stderr=subprocess.STDOUT)
     return exitcode == 0
 
-def get_virtio_scsi_device():
-    if qemu_default_machine == 's390-ccw-virtio':
-        return 'virtio-scsi-ccw'
-    return 'virtio-scsi-pci'
-
 class QemuIoInteractive:
     def __init__(self, *args):
         self.args = qemu_io_args_no_fmt + list(args)
+        # We need to keep the Popen objext around, and not
+        # close it immediately. Therefore, disable the pylint check:
+        # pylint: disable=consider-using-with
         self._p = subprocess.Popen(self.args, stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT,
@@ -296,27 +302,31 @@ def qemu_nbd_list_log(*args: str) -> str:
 @contextmanager
 def qemu_nbd_popen(*args):
     '''Context manager running qemu-nbd within the context'''
-    pid_file = file_path("pid")
+    pid_file = file_path("qemu_nbd_popen-nbd-pid-file")
+
+    assert not os.path.exists(pid_file)
 
     cmd = list(qemu_nbd_args)
     cmd.extend(('--persistent', '--pid-file', pid_file))
     cmd.extend(args)
 
     log('Start NBD server')
-    p = subprocess.Popen(cmd)
-    try:
-        while not os.path.exists(pid_file):
-            if p.poll() is not None:
-                raise RuntimeError(
-                    "qemu-nbd terminated with exit code {}: {}"
-                    .format(p.returncode, ' '.join(cmd)))
+    with subprocess.Popen(cmd) as p:
+        try:
+            while not os.path.exists(pid_file):
+                if p.poll() is not None:
+                    raise RuntimeError(
+                        "qemu-nbd terminated with exit code {}: {}"
+                        .format(p.returncode, ' '.join(cmd)))
 
-            time.sleep(0.01)
-        yield
-    finally:
-        log('Kill NBD server')
-        p.kill()
-        p.wait()
+                time.sleep(0.01)
+            yield
+        finally:
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
+            log('Kill NBD server')
+            p.kill()
+            p.wait()
 
 def compare_images(img1, img2, fmt1=imgfmt, fmt2=imgfmt):
     '''Return True if two image files are identical'''
@@ -325,13 +335,12 @@ def compare_images(img1, img2, fmt1=imgfmt, fmt2=imgfmt):
 
 def create_image(name, size):
     '''Create a fully-allocated raw image with sector markers'''
-    file = open(name, 'wb')
-    i = 0
-    while i < size:
-        sector = struct.pack('>l504xl', i // 512, i // 512)
-        file.write(sector)
-        i = i + 512
-    file.close()
+    with open(name, 'wb') as file:
+        i = 0
+        while i < size:
+            sector = struct.pack('>l504xl', i // 512, i // 512)
+            file.write(sector)
+            i = i + 512
 
 def image_size(img):
     '''Return image's virtual size'''
@@ -562,7 +571,7 @@ class VM(qtest.QEMUQtestMachine):
     def __init__(self, path_suffix=''):
         name = "qemu%s-%d" % (path_suffix, os.getpid())
         super().__init__(qemu_prog, qemu_opts, name=name,
-                         test_dir=test_dir,
+                         base_temp_dir=test_dir,
                          socket_scm_helper=socket_scm_helper,
                          sock_dir=sock_dir)
         self._num_drives = 0
@@ -1137,6 +1146,11 @@ def _verify_virtio_blk() -> None:
     if 'virtio-blk' not in out:
         notrun('Missing virtio-blk in QEMU binary')
 
+def _verify_virtio_scsi_pci_or_ccw() -> None:
+    out = qemu_pipe('-M', 'none', '-device', 'help')
+    if 'virtio-scsi-pci' not in out and 'virtio-scsi-ccw' not in out:
+        notrun('Missing virtio-scsi-pci or virtio-scsi-ccw in QEMU binary')
+
 
 def supports_quorum():
     return 'quorum' in qemu_img_pipe('--help')
@@ -1257,37 +1271,54 @@ def skip_if_user_is_root(func):
             return func(*args, **kwargs)
     return func_wrapper
 
-def execute_unittest(debug=False):
+# We need to filter out the time taken from the output so that
+# qemu-iotest can reliably diff the results against master output,
+# and hide skipped tests from the reference output.
+
+class ReproducibleTestResult(unittest.TextTestResult):
+    def addSkip(self, test, reason):
+        # Same as TextTestResult, but print dot instead of "s"
+        unittest.TestResult.addSkip(self, test, reason)
+        if self.showAll:
+            self.stream.writeln("skipped {0!r}".format(reason))
+        elif self.dots:
+            self.stream.write(".")
+            self.stream.flush()
+
+class ReproducibleStreamWrapper:
+    def __init__(self, stream: TextIO):
+        self.stream = stream
+
+    def __getattr__(self, attr):
+        if attr in ('stream', '__getstate__'):
+            raise AttributeError(attr)
+        return getattr(self.stream, attr)
+
+    def write(self, arg=None):
+        arg = re.sub(r'Ran (\d+) tests? in [\d.]+s', r'Ran \1 tests', arg)
+        arg = re.sub(r' \(skipped=\d+\)', r'', arg)
+        self.stream.write(arg)
+
+class ReproducibleTestRunner(unittest.TextTestRunner):
+    def __init__(self, stream: Optional[TextIO] = None,
+             resultclass: Type[unittest.TestResult] = ReproducibleTestResult,
+             **kwargs: Any) -> None:
+        rstream = ReproducibleStreamWrapper(stream or sys.stdout)
+        super().__init__(stream=rstream,           # type: ignore
+                         descriptions=True,
+                         resultclass=resultclass,
+                         **kwargs)
+
+def execute_unittest(argv: List[str], debug: bool = False) -> None:
     """Executes unittests within the calling module."""
 
-    verbosity = 2 if debug else 1
-
-    if debug:
-        output = sys.stdout
-    else:
-        # We need to filter out the time taken from the output so that
-        # qemu-iotest can reliably diff the results against master output.
-        output = io.StringIO()
-
-    runner = unittest.TextTestRunner(stream=output, descriptions=True,
-                                     verbosity=verbosity)
-    try:
-        # unittest.main() will use sys.exit(); so expect a SystemExit
-        # exception
-        unittest.main(testRunner=runner)
-    finally:
-        # We need to filter out the time taken from the output so that
-        # qemu-iotest can reliably diff the results against master output.
-        if not debug:
-            out = output.getvalue()
-            out = re.sub(r'Ran (\d+) tests? in [\d.]+s', r'Ran \1 tests', out)
-
-            # Hide skipped tests from the reference output
-            out = re.sub(r'OK \(skipped=\d+\)', 'OK', out)
-            out_first_line, out_rest = out.split('\n', 1)
-            out = out_first_line.replace('s', '.') + '\n' + out_rest
-
-            sys.stderr.write(out)
+    # Some tests have warnings, especially ResourceWarnings for unclosed
+    # files and sockets.  Ignore them for now to ensure reproducibility of
+    # the test output.
+    unittest.main(argv=argv,
+                  testRunner=ReproducibleTestRunner,
+                  verbosity=2 if debug else 1,
+                  warnings=None if sys.warnoptions else 'ignore')
 
 def execute_setup_common(supported_fmts: Sequence[str] = (),
                          supported_platforms: Sequence[str] = (),
@@ -1324,7 +1355,7 @@ def execute_test(*args, test_function=None, **kwargs):
 
     debug = execute_setup_common(*args, **kwargs)
     if not test_function:
-        execute_unittest(debug)
+        execute_unittest(sys.argv, debug)
     else:
         test_function()
 

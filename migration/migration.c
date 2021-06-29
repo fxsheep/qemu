@@ -60,10 +60,6 @@
 #include "qemu/yank.h"
 #include "sysemu/cpus.h"
 
-#ifdef CONFIG_VFIO
-#include "hw/vfio/vfio-common.h"
-#endif
-
 #define MAX_THROTTLE  (128 << 20)      /* Migration transfer speed throttling */
 
 /* Amount of time to allocate to each "chunk" of bandwidth-throttled
@@ -223,13 +219,18 @@ void migration_object_init(void)
     dirty_bitmap_mig_init();
 }
 
+void migration_cancel(void)
+{
+    migrate_fd_cancel(current_migration);
+}
+
 void migration_shutdown(void)
 {
     /*
      * Cancel the current migration - that will (eventually)
      * stop the migration using this structure
      */
-    migrate_fd_cancel(current_migration);
+    migration_cancel();
     object_unref(OBJECT(current_migration));
 
     /*
@@ -279,6 +280,9 @@ void migration_incoming_state_destroy(void)
         g_array_free(mis->postcopy_remote_fds, TRUE);
         mis->postcopy_remote_fds = NULL;
     }
+    if (mis->transport_cleanup) {
+        mis->transport_cleanup(mis->transport_data);
+    }
 
     qemu_event_reset(&mis->main_thread_load_event);
 
@@ -323,7 +327,7 @@ static int migrate_send_rp_message(MigrationIncomingState *mis,
     int ret = 0;
 
     trace_migrate_send_rp_message((int)message_type, len);
-    qemu_mutex_lock(&mis->rp_mutex);
+    QEMU_LOCK_GUARD(&mis->rp_mutex);
 
     /*
      * It's possible that the file handle got lost due to network
@@ -331,7 +335,7 @@ static int migrate_send_rp_message(MigrationIncomingState *mis,
      */
     if (!mis->to_src_file) {
         ret = -EIO;
-        goto error;
+        return ret;
     }
 
     qemu_put_be16(mis->to_src_file, (unsigned int)message_type);
@@ -342,8 +346,6 @@ static int migrate_send_rp_message(MigrationIncomingState *mis,
     /* It's possible that qemu file got error during sending */
     ret = qemu_file_get_error(mis->to_src_file);
 
-error:
-    qemu_mutex_unlock(&mis->rp_mutex);
     return ret;
 }
 
@@ -1061,41 +1063,27 @@ static void populate_disk_info(MigrationInfo *info)
     }
 }
 
-static void populate_vfio_info(MigrationInfo *info)
-{
-#ifdef CONFIG_VFIO
-    if (vfio_mig_active()) {
-        info->has_vfio = true;
-        info->vfio = g_malloc0(sizeof(*info->vfio));
-        info->vfio->transferred = vfio_mig_bytes_transferred();
-    }
-#endif
-}
-
 static void fill_source_migration_info(MigrationInfo *info)
 {
     MigrationState *s = migrate_get_current();
+    GSList *cur_blocker = migration_blockers;
 
-    info->blocked = migration_is_blocked(NULL);
-    info->has_blocked_reasons = info->blocked;
     info->blocked_reasons = NULL;
-    if (info->blocked) {
-        GSList *cur_blocker = migration_blockers;
 
-        /*
-         * There are two types of reasons a migration might be blocked;
-         * a) devices marked in VMState as non-migratable, and
-         * b) Explicit migration blockers
-         * We need to add both of them here.
-         */
-        qemu_savevm_non_migratable_list(&info->blocked_reasons);
+    /*
+     * There are two types of reasons a migration might be blocked;
+     * a) devices marked in VMState as non-migratable, and
+     * b) Explicit migration blockers
+     * We need to add both of them here.
+     */
+    qemu_savevm_non_migratable_list(&info->blocked_reasons);
 
-        while (cur_blocker) {
-            QAPI_LIST_PREPEND(info->blocked_reasons,
-                              g_strdup(error_get_pretty(cur_blocker->data)));
-            cur_blocker = g_slist_next(cur_blocker);
-        }
+    while (cur_blocker) {
+        QAPI_LIST_PREPEND(info->blocked_reasons,
+                          g_strdup(error_get_pretty(cur_blocker->data)));
+        cur_blocker = g_slist_next(cur_blocker);
     }
+    info->has_blocked_reasons = info->blocked_reasons != NULL;
 
     switch (s->state) {
     case MIGRATION_STATUS_NONE:
@@ -1978,6 +1966,14 @@ bool migration_in_incoming_postcopy(void)
     return ps >= POSTCOPY_INCOMING_DISCARD && ps < POSTCOPY_INCOMING_END;
 }
 
+bool migration_in_bg_snapshot(void)
+{
+    MigrationState *s = migrate_get_current();
+
+    return migrate_background_snapshot() &&
+            migration_is_setup_or_active(s->state);
+}
+
 bool migration_is_idle(void)
 {
     MigrationState *s = current_migration;
@@ -2221,6 +2217,10 @@ static bool migrate_prepare(MigrationState *s, bool blk, bool blk_inc,
     }
 
     if (blk || blk_inc) {
+        if (migrate_colo_enabled()) {
+            error_setg(errp, "No disk migration is required in COLO mode");
+            return false;
+        }
         if (migrate_use_block() || migrate_use_block_incremental()) {
             error_setg(errp, "Command options are incompatible with "
                        "current migration capabilities");
@@ -2304,7 +2304,7 @@ void qmp_migrate(const char *uri, bool has_blk, bool blk,
 
 void qmp_migrate_cancel(Error **errp)
 {
-    migrate_fd_cancel(migrate_get_current());
+    migration_cancel();
 }
 
 void qmp_migrate_continue(MigrationStatus state, Error **errp)
@@ -2316,51 +2316,6 @@ void qmp_migrate_continue(MigrationStatus state, Error **errp)
         return;
     }
     qemu_sem_post(&s->pause_sem);
-}
-
-void qmp_migrate_set_cache_size(int64_t value, Error **errp)
-{
-    MigrateSetParameters p = {
-        .has_xbzrle_cache_size = true,
-        .xbzrle_cache_size = value,
-    };
-
-    qmp_migrate_set_parameters(&p, errp);
-}
-
-uint64_t qmp_query_migrate_cache_size(Error **errp)
-{
-    return migrate_xbzrle_cache_size();
-}
-
-void qmp_migrate_set_speed(int64_t value, Error **errp)
-{
-    MigrateSetParameters p = {
-        .has_max_bandwidth = true,
-        .max_bandwidth = value,
-    };
-
-    qmp_migrate_set_parameters(&p, errp);
-}
-
-void qmp_migrate_set_downtime(double value, Error **errp)
-{
-    if (value < 0 || value > MAX_MIGRATE_DOWNTIME_SECONDS) {
-        error_setg(errp, QERR_INVALID_PARAMETER_VALUE,
-                   "downtime_limit",
-                   "an integer in the range of 0 to "
-                    stringify(MAX_MIGRATE_DOWNTIME_SECONDS)" seconds");
-        return;
-    }
-
-    value *= 1000; /* Convert to milliseconds */
-
-    MigrateSetParameters p = {
-        .has_downtime_limit = true,
-        .downtime_limit = (int64_t)value,
-    };
-
-    qmp_migrate_set_parameters(&p, errp);
 }
 
 bool migrate_release_ram(void)
@@ -3160,6 +3115,7 @@ static void migration_completion(MigrationState *s)
         if (!ret) {
             bool inactivate = !migrate_colo_enabled();
             ret = vm_stop_force_state(RUN_STATE_FINISH_MIGRATE);
+            trace_migration_completion_vm_stop(ret);
             if (ret >= 0) {
                 ret = migration_maybe_pause(s, &current_active_state,
                                             MIGRATION_STATUS_DEVICE);
@@ -3859,12 +3815,20 @@ static void *bg_migration_thread(void *opaque)
      * with vCPUs running and, finally, write stashed non-RAM part of
      * the vmstate from the buffer to the migration stream.
      */
-    s->bioc = qio_channel_buffer_new(128 * 1024);
+    s->bioc = qio_channel_buffer_new(512 * 1024);
     qio_channel_set_name(QIO_CHANNEL(s->bioc), "vmstate-buffer");
     fb = qemu_fopen_channel_output(QIO_CHANNEL(s->bioc));
     object_unref(OBJECT(s->bioc));
 
     update_iteration_initial_status(s);
+
+    /*
+     * Prepare for tracking memory writes with UFFD-WP - populate
+     * RAM pages before protecting.
+     */
+#ifdef __linux__
+    ram_write_tracking_prepare();
+#endif
 
     qemu_savevm_state_header(s->to_dst_file);
     qemu_savevm_state_setup(s->to_dst_file);
@@ -3913,6 +3877,12 @@ static void *bg_migration_thread(void *opaque)
     if (qemu_savevm_state_complete_precopy_non_iterable(fb, false, false)) {
         goto fail;
     }
+    /*
+     * Since we are going to get non-iterable state data directly
+     * from s->bioc->data, explicit flush is needed here.
+     */
+    qemu_fflush(fb);
+
     /* Now initialize UFFD context and start tracking RAM writes */
     if (ram_write_tracking_start()) {
         goto fail;

@@ -113,21 +113,31 @@ static int qemu_rbd_connect(rados_t *cluster, rados_ioctx_t *io_ctx,
                             const char *keypairs, const char *secretid,
                             Error **errp);
 
+static char *qemu_rbd_strchr(char *src, char delim)
+{
+    char *p;
+
+    for (p = src; *p; ++p) {
+        if (*p == delim) {
+            return p;
+        }
+        if (*p == '\\' && p[1] != '\0') {
+            ++p;
+        }
+    }
+
+    return NULL;
+}
+
+
 static char *qemu_rbd_next_tok(char *src, char delim, char **p)
 {
     char *end;
 
     *p = NULL;
 
-    for (end = src; *end; ++end) {
-        if (*end == delim) {
-            break;
-        }
-        if (*end == '\\' && end[1] != '\0') {
-            end++;
-        }
-    }
-    if (*end == delim) {
+    end = qemu_rbd_strchr(src, delim);
+    if (end) {
         *p = end + 1;
         *end = '\0';
     }
@@ -171,7 +181,7 @@ static void qemu_rbd_parse_filename(const char *filename, QDict *options,
     qemu_rbd_unescape(found_str);
     qdict_put_str(options, "pool", found_str);
 
-    if (strchr(p, '@')) {
+    if (qemu_rbd_strchr(p, '@')) {
         image_name = qemu_rbd_next_tok(p, '@', &p);
 
         found_str = qemu_rbd_next_tok(p, ':', &p);
@@ -181,7 +191,7 @@ static void qemu_rbd_parse_filename(const char *filename, QDict *options,
         image_name = qemu_rbd_next_tok(p, ':', &p);
     }
     /* Check for namespace in the image_name */
-    if (strchr(image_name, '/')) {
+    if (qemu_rbd_strchr(image_name, '/')) {
         found_str = qemu_rbd_next_tok(image_name, '/', &image_name);
         qemu_rbd_unescape(found_str);
         qdict_put_str(options, "namespace", found_str);
@@ -444,6 +454,7 @@ static int coroutine_fn qemu_rbd_co_create_opts(BlockDriver *drv,
     loc->user        = g_strdup(qdict_get_try_str(options, "user"));
     loc->has_user    = !!loc->user;
     loc->q_namespace = g_strdup(qdict_get_try_str(options, "namespace"));
+    loc->has_q_namespace = !!loc->q_namespace;
     loc->image       = g_strdup(qdict_get_try_str(options, "image"));
     keypairs         = qdict_get_try_str(options, "=keyvalue-pairs");
 
@@ -563,13 +574,13 @@ static int qemu_rbd_connect(rados_t *cluster, rados_ioctx_t *io_ctx,
     if (local_err) {
         error_propagate(errp, local_err);
         r = -EINVAL;
-        goto failed_opts;
+        goto out;
     }
 
     r = rados_create(cluster, opts->user);
     if (r < 0) {
         error_setg_errno(errp, -r, "error initializing");
-        goto failed_opts;
+        goto out;
     }
 
     /* try default location when conf=NULL, but ignore failure */
@@ -626,11 +637,12 @@ static int qemu_rbd_connect(rados_t *cluster, rados_ioctx_t *io_ctx,
      */
     rados_ioctx_set_namespace(*io_ctx, opts->q_namespace);
 
-    return 0;
+    r = 0;
+    goto out;
 
 failed_shutdown:
     rados_shutdown(*cluster);
-failed_opts:
+out:
     g_free(mon_host);
     return r;
 }

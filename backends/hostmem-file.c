@@ -15,7 +15,6 @@
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "sysemu/hostmem.h"
-#include "sysemu/sysemu.h"
 #include "qom/object_interfaces.h"
 #include "qom/object.h"
 
@@ -40,6 +39,7 @@ file_backend_memory_alloc(HostMemoryBackend *backend, Error **errp)
                object_get_typename(OBJECT(backend)));
 #else
     HostMemoryBackendFile *fb = MEMORY_BACKEND_FILE(backend);
+    uint32_t ram_flags;
     gchar *name;
 
     if (!backend->size) {
@@ -52,11 +52,11 @@ file_backend_memory_alloc(HostMemoryBackend *backend, Error **errp)
     }
 
     name = host_memory_backend_get_name(backend);
-    memory_region_init_ram_from_file(&backend->mr, OBJECT(backend),
-                                     name,
-                                     backend->size, fb->align,
-                                     (backend->share ? RAM_SHARED : 0) |
-                                     (fb->is_pmem ? RAM_PMEM : 0),
+    ram_flags = backend->share ? RAM_SHARED : 0;
+    ram_flags |= backend->reserve ? 0 : RAM_NORESERVE;
+    ram_flags |= fb->is_pmem ? RAM_PMEM : 0;
+    memory_region_init_ram_from_file(&backend->mr, OBJECT(backend), name,
+                                     backend->size, fb->align, ram_flags,
                                      fb->mem_path, fb->readonly, errp);
     g_free(name);
 #endif
@@ -124,6 +124,7 @@ static void file_memory_backend_set_align(Object *o, Visitor *v,
     fb->align = val;
 }
 
+#ifdef CONFIG_LIBPMEM
 static bool file_memory_backend_get_pmem(Object *o, Error **errp)
 {
     return MEMORY_BACKEND_FILE(o)->is_pmem;
@@ -140,17 +141,9 @@ static void file_memory_backend_set_pmem(Object *o, bool value, Error **errp)
         return;
     }
 
-#ifndef CONFIG_LIBPMEM
-    if (value) {
-        error_setg(errp, "Lack of libpmem support while setting the 'pmem=on'"
-                   " of %s. We can't ensure data persistence.",
-                   object_get_typename(o));
-        return;
-    }
-#endif
-
     fb->is_pmem = value;
 }
+#endif /* CONFIG_LIBPMEM */
 
 static bool file_memory_backend_get_readonly(Object *obj, Error **errp)
 {
@@ -203,8 +196,10 @@ file_backend_class_init(ObjectClass *oc, void *data)
         file_memory_backend_get_align,
         file_memory_backend_set_align,
         NULL, NULL);
+#ifdef CONFIG_LIBPMEM
     object_class_property_add_bool(oc, "pmem",
         file_memory_backend_get_pmem, file_memory_backend_set_pmem);
+#endif
     object_class_property_add_bool(oc, "readonly",
         file_memory_backend_get_readonly,
         file_memory_backend_set_readonly);

@@ -145,10 +145,8 @@ static inline tcg_target_long sextreg(tcg_target_long val, int pos, int len)
 }
 
 /* test if a constant matches the constraint */
-static int tcg_target_const_match(tcg_target_long val, TCGType type,
-                                  const TCGArgConstraint *arg_ct)
+static bool tcg_target_const_match(int64_t val, TCGType type, int ct)
 {
-    int ct = arg_ct->ct;
     if (ct & TCG_CT_CONST) {
         return 1;
     }
@@ -1212,7 +1210,8 @@ static void tcg_out_qemu_st(TCGContext *s, const TCGArg *args, bool is_64)
 static const tcg_insn_unit *tb_ret_addr;
 
 static void tcg_out_op(TCGContext *s, TCGOpcode opc,
-                       const TCGArg *args, const int *const_args)
+                       const TCGArg args[TCG_MAX_OP_ARGS],
+                       const int const_args[TCG_MAX_OP_ARGS])
 {
     TCGArg a0 = args[0];
     TCGArg a1 = args[1];

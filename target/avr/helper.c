@@ -49,7 +49,9 @@ bool avr_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
             cc->tcg_ops->do_interrupt(cs);
 
             env->intsrc &= env->intsrc - 1; /* clear the interrupt */
-            cs->interrupt_request &= ~CPU_INTERRUPT_HARD;
+            if (!env->intsrc) {
+                cs->interrupt_request &= ~CPU_INTERRUPT_HARD;
+            }
 
             ret = true;
         }
@@ -98,7 +100,7 @@ int avr_cpu_memory_rw_debug(CPUState *cs, vaddr addr, uint8_t *buf,
 
 hwaddr avr_cpu_get_phys_page_debug(CPUState *cs, vaddr addr)
 {
-    return addr; /* I assume 1:1 address correspondance */
+    return addr; /* I assume 1:1 address correspondence */
 }
 
 bool avr_cpu_tlb_fill(CPUState *cs, vaddr address, int size,
@@ -186,11 +188,7 @@ void helper_break(CPUAVRState *env)
 
 void helper_wdr(CPUAVRState *env)
 {
-    CPUState *cs = env_cpu(env);
-
-    /* WD is not implemented yet, placeholder */
-    cs->exception_index = EXCP_DEBUG;
-    cpu_loop_exit(cs);
+    qemu_log_mask(LOG_UNIMP, "WDG reset (not implemented)\n");
 }
 
 /*
@@ -299,7 +297,7 @@ void helper_outb(CPUAVRState *env, uint32_t port, uint32_t data)
 }
 
 /*
- *  this function implements LD instruction when there is a posibility to read
+ *  this function implements LD instruction when there is a possibility to read
  *  from a CPU register
  */
 target_ulong helper_fullrd(CPUAVRState *env, uint32_t addr)
@@ -323,7 +321,7 @@ target_ulong helper_fullrd(CPUAVRState *env, uint32_t addr)
 }
 
 /*
- *  this function implements ST instruction when there is a posibility to write
+ *  this function implements ST instruction when there is a possibility to write
  *  into a CPU register
  */
 void helper_fullwr(CPUAVRState *env, uint32_t data, uint32_t addr)

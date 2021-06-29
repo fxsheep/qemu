@@ -228,6 +228,10 @@ The 'map' type adds a number of separate rules to add **prepend** as a prefix
 to the matched **key** (or all attributes if **key** is empty).
 There may be at most one 'map' rule and it must be the last rule in the set.
 
+Note: When the 'security.capability' xattr is remapped, the daemon has to do
+extra work to remove it during many operations, which the host kernel normally
+does itself.
+
 xattr-mapping Examples
 ----------------------
 
@@ -235,7 +239,7 @@ xattr-mapping Examples
 
 ::
 
--o xattrmap=":prefix:all::user.virtiofs.::bad:all:::"
+ -o xattrmap=":prefix:all::user.virtiofs.::bad:all:::"
 
 
 This uses two rules, using : as the field separator;
@@ -246,7 +250,8 @@ the host set.
 This is equivalent to the 'map' rule:
 
 ::
--o xattrmap=":map::user.virtiofs.:"
+
+ -o xattrmap=":map::user.virtiofs.:"
 
 2) Prefix 'trusted.' attributes, allow others through
 
@@ -273,7 +278,8 @@ through.
 This is equivalent to the 'map' rule:
 
 ::
--o xattrmap="/map/trusted./user.virtiofs./"
+
+ -o xattrmap="/map/trusted./user.virtiofs./"
 
 3) Hide 'security.' attributes, and allow everything else
 
@@ -294,13 +300,13 @@ Examples
 Export ``/var/lib/fs/vm001/`` on vhost-user UNIX domain socket
 ``/var/run/vm001-vhost-fs.sock``:
 
-::
+.. parsed-literal::
 
   host# virtiofsd --socket-path=/var/run/vm001-vhost-fs.sock -o source=/var/lib/fs/vm001
-  host# qemu-system-x86_64 \
-      -chardev socket,id=char0,path=/var/run/vm001-vhost-fs.sock \
-      -device vhost-user-fs-pci,chardev=char0,tag=myfs \
-      -object memory-backend-memfd,id=mem,size=4G,share=on \
-      -numa node,memdev=mem \
-      ...
+  host# |qemu_system| \\
+        -chardev socket,id=char0,path=/var/run/vm001-vhost-fs.sock \\
+        -device vhost-user-fs-pci,chardev=char0,tag=myfs \\
+        -object memory-backend-memfd,id=mem,size=4G,share=on \\
+        -numa node,memdev=mem \\
+        ...
   guest# mount -t virtiofs myfs /mnt

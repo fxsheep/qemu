@@ -318,6 +318,25 @@ static const VMStateDescription vmstate_m_fp = {
     }
 };
 
+static bool mve_needed(void *opaque)
+{
+    ARMCPU *cpu = opaque;
+
+    return cpu_isar_feature(aa32_mve, cpu);
+}
+
+static const VMStateDescription vmstate_m_mve = {
+    .name = "cpu/m/mve",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mve_needed,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT32(env.v7m.vpr, ARMCPU),
+        VMSTATE_UINT32(env.v7m.ltpsize, ARMCPU),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_m = {
     .name = "cpu/m",
     .version_id = 4,
@@ -344,6 +363,7 @@ static const VMStateDescription vmstate_m = {
         &vmstate_m_other_sp,
         &vmstate_m_v8m,
         &vmstate_m_fp,
+        &vmstate_m_mve,
         NULL
     }
 };
@@ -810,7 +830,7 @@ const VMStateDescription vmstate_arm_cpu = {
         VMSTATE_UINT64(env.exclusive_addr, ARMCPU),
         VMSTATE_UINT64(env.exclusive_val, ARMCPU),
         VMSTATE_UINT64(env.exclusive_high, ARMCPU),
-        VMSTATE_UINT64(env.features, ARMCPU),
+        VMSTATE_UNUSED(sizeof(uint64_t)),
         VMSTATE_UINT32(env.exception.syndrome, ARMCPU),
         VMSTATE_UINT32(env.exception.fsr, ARMCPU),
         VMSTATE_UINT64(env.exception.vaddress, ARMCPU),

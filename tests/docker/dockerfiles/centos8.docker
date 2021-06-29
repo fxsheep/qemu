@@ -14,8 +14,10 @@ ENV PACKAGES \
     git \
     glib2-devel \
     libaio-devel \
+    libbpf-devel \
     libepoxy-devel \
     libfdt-devel \
+    libffi-devel \
     libgcrypt-devel \
     lzo-devel \
     make \
@@ -29,6 +31,7 @@ ENV PACKAGES \
     rdma-core-devel \
     spice-glib-devel \
     spice-server \
+    systemtap-sdt-devel \
     tar \
     zlib-devel
 

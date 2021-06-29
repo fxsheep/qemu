@@ -58,7 +58,6 @@
 #include "hw/pci/pci.h"
 #include "net/net.h"
 #include "sysemu/sysemu.h"
-#include "hw/boards.h"
 #include "hw/nvram/fw_cfg.h"
 #include "hw/char/escc.h"
 #include "hw/misc/macio/macio.h"
@@ -71,7 +70,6 @@
 #include "sysemu/reset.h"
 #include "kvm_ppc.h"
 #include "hw/usb.h"
-#include "exec/address-spaces.h"
 #include "hw/sysbus.h"
 #include "trace.h"
 
@@ -157,6 +155,10 @@ static void ppc_core99_init(MachineState *machine)
     }
 
     /* allocate RAM */
+    if (machine->ram_size > 2 * GiB) {
+        error_report("RAM size more than 2 GiB is not supported");
+        exit(1);
+    }
     memory_region_add_subregion(get_system_memory(), 0, machine->ram);
 
     /* allocate and load firmware ROM */
@@ -539,8 +541,6 @@ static char *core99_fw_dev_path(FWPathProvider *p, BusState *bus,
                                 DeviceState *dev)
 {
     PCIDevice *pci;
-    IDEBus *ide_bus;
-    IDEState *ide_s;
     MACIOIDEState *macio_ide;
 
     if (!strcmp(object_get_typename(OBJECT(dev)), "macio-newworld")) {
@@ -551,17 +551,6 @@ static char *core99_fw_dev_path(FWPathProvider *p, BusState *bus,
     if (!strcmp(object_get_typename(OBJECT(dev)), "macio-ide")) {
         macio_ide = MACIO_IDE(dev);
         return g_strdup_printf("ata-3@%x", macio_ide->addr);
-    }
-
-    if (!strcmp(object_get_typename(OBJECT(dev)), "ide-drive")) {
-        ide_bus = IDE_BUS(qdev_get_parent_bus(dev));
-        ide_s = idebus_active_if(ide_bus);
-
-        if (ide_s->drive_kind == IDE_CD) {
-            return g_strdup("cdrom");
-        }
-
-        return g_strdup("disk");
     }
 
     if (!strcmp(object_get_typename(OBJECT(dev)), "ide-hd")) {

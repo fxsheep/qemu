@@ -641,10 +641,6 @@ _cleanup_test_img()
             rbd --no-progress rm "$TEST_DIR/t.$IMGFMT" > /dev/null
             ;;
 
-        sheepdog)
-            collie vdi delete "$TEST_DIR/t.$IMGFMT"
-            ;;
-
     esac
 }
 
@@ -885,7 +881,9 @@ _unsupported_imgopts()
 {
     for bad_opt
     do
-        if echo "$IMGOPTS" | grep -q 2>/dev/null "$bad_opt"
+        # Add a space so tests can match for whitespace that marks the
+        # end of an option (\b or \> are not portable)
+        if echo "$IMGOPTS " | grep -q 2>/dev/null "$bad_opt"
         then
             _notrun "not suitable for image option: $bad_opt"
         fi
@@ -973,6 +971,19 @@ _require_devices()
             _notrun "$device not available"
         fi
     done
+}
+
+_require_one_device_of()
+{
+    available=$($QEMU -M none -device help | \
+                grep ^name | sed -e 's/^name "//' -e 's/".*$//')
+    for device
+    do
+        if echo "$available" | grep -q "$device" ; then
+            return
+        fi
+    done
+    _notrun "$* not available"
 }
 
 # make sure this script returns success

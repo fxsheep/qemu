@@ -25,7 +25,6 @@
 #include "kvm_ppc.h"
 #include "migration/vmstate.h"
 #include "sysemu/dma.h"
-#include "exec/address-spaces.h"
 #include "trace.h"
 
 #include "hw/ppc/spapr.h"
@@ -211,6 +210,11 @@ static int spapr_tce_notify_flag_changed(IOMMUMemoryRegion *iommu,
                                          Error **errp)
 {
     struct SpaprTceTable *tbl = container_of(iommu, SpaprTceTable, iommu);
+
+    if (new & IOMMU_NOTIFIER_DEVIOTLB_UNMAP) {
+        error_setg(errp, "spart_tce does not support dev-iotlb yet");
+        return -EINVAL;
+    }
 
     if (old == IOMMU_NOTIFIER_NONE && new != IOMMU_NOTIFIER_NONE) {
         spapr_tce_set_need_vfio(tbl, true);

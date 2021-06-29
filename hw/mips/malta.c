@@ -27,7 +27,6 @@
 #include "qemu/bitops.h"
 #include "qemu-common.h"
 #include "qemu/datadir.h"
-#include "cpu.h"
 #include "hw/clock.h"
 #include "hw/southbridge/piix.h"
 #include "hw/isa/superio.h"
@@ -39,7 +38,6 @@
 #include "hw/mips/mips.h"
 #include "hw/mips/cpudevs.h"
 #include "hw/pci/pci.h"
-#include "sysemu/sysemu.h"
 #include "sysemu/arch_init.h"
 #include "qemu/log.h"
 #include "hw/mips/bios.h"
@@ -47,7 +45,6 @@
 #include "hw/irq.h"
 #include "hw/loader.h"
 #include "elf.h"
-#include "exec/address-spaces.h"
 #include "qom/object.h"
 #include "hw/sysbus.h"             /* SysBusDevice */
 #include "qemu/host-utils.h"
@@ -58,7 +55,7 @@
 #include "qemu/error-report.h"
 #include "hw/misc/empty_slot.h"
 #include "sysemu/kvm.h"
-#include "hw/semihosting/semihost.h"
+#include "semihosting/semihost.h"
 #include "hw/mips/cps.h"
 #include "hw/qdev-clock.h"
 
