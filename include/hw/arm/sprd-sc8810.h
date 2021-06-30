@@ -4,6 +4,7 @@
 #include "qemu/error-report.h"
 #include "hw/char/serial.h"
 #include "hw/arm/boot.h"
+#include "hw/intc/sprd-sc8810-intc.h"
 
 #include "target/arm/cpu.h"
 #include "qom/object.h"
@@ -11,6 +12,7 @@
 enum {
     SDRAM_0,
     IRAM_0,
+    INTC,
     UART_0,
     SDRAM_1,
     SDRAM_2,
@@ -20,6 +22,7 @@ enum {
 static const MemMapEntry memmap[] = {
     [SDRAM_0] =              {          0, 0x10000000 },
     [IRAM_0 ] =              { 0x40000000, 0x10000000 },
+    [INTC   ] =              { 0x80003000,     0x1000 },
     [UART_0 ] =              { 0x84000000,  0x1000000 },
     [SDRAM_1] =              { 0xc0000000, 0x10000000 },
     [SDRAM_2] =              { 0xe0000000, 0x10000000 },
@@ -35,6 +38,7 @@ struct SC8810State {
     /*< public >*/
 
     ARMCPU cpu;
+    SC8810INTCState intc;
 };
 
 #endif // HW_ARM_SPRD_SC8810_H

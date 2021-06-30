@@ -30,6 +30,9 @@ config ARM_GIC_KVM
     default y
     depends on ARM_GIC && KVM
 
+config SPRD_SC8810_INTC
+    bool
+
 config XICS
     bool
 

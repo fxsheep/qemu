@@ -231,6 +231,7 @@ config KYLETD
 config SPRD_SC8810
     bool
     select SERIAL
+    select SPRD_SC8810_INTC
 
 config STELLARIS
     bool
