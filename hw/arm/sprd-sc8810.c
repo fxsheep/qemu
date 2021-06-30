@@ -41,6 +41,8 @@ static void sc8810_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(sysbusdev, 1,
                        qdev_get_gpio_in(DEVICE(&s->cpu), ARM_CPU_FIQ));
     qdev_pass_gpios(DEVICE(&s->intc), dev, NULL);
+
+    sysbus_create_simple("l2x0", memmap[PL310].base, NULL);
 }
 
 static void sc8810_class_init(ObjectClass *oc, void *data)
