@@ -46,6 +46,14 @@ config RENESAS_TMR
 config RENESAS_CMT
     bool
 
+config SPRD_SC8810_GP_TIMER
+    bool
+    select PTIMER
+
+config SPRD_SC8810_SYS_TIMER
+    bool
+    select PTIMER
+
 config SSE_COUNTER
     bool
 
