@@ -108,7 +108,7 @@ static void sprd_sc8810_intc_write(void *opaque, hwaddr offset, uint64_t value,
         s->irq_enable |= value;
         break;
     case INT_IRQ_DISABLE:
-        s->irq_enable &= !value;
+        s->irq_enable &= ~value;
         break;
     case INT_IRQ_SOFT:
         s->irq_raw_sts = (s->irq_raw_sts & 0xFFFFFFFD) | (value & 2);
@@ -127,7 +127,7 @@ static void sprd_sc8810_intc_write(void *opaque, hwaddr offset, uint64_t value,
         s->fiq_enable |= value;
         break;
     case INT_FIQ_DISABLE:
-        s->fiq_enable &= !value;
+        s->fiq_enable &= ~value;
         break;
     case INT_FIQ_SOFT:
         s->fiq_raw_sts = (s->fiq_raw_sts & 0xFFFFFFFD) | (value & 2);
