@@ -27,10 +27,14 @@ static void s7568_init(MachineState *machine)
     SC8810State *sc8810;
     Error *err = NULL;
 
-    MemoryRegion *sysmem = get_system_memory(); 
     MemoryRegion *irom = g_new(MemoryRegion, 1);
     int irom_size;
     char *filename;
+
+    if (machine->ram_size != 768 * MiB) {
+        error_report("This machine can only be used with 768MiB RAM");
+        exit(1);
+    }
 
     /* Only allow Cortex-A8 for now before Cortex-A5 support is added */
     if (strcmp(machine->cpu_type, ARM_CPU_TYPE_NAME("cortex-a8")) != 0) {
@@ -47,11 +51,35 @@ static void s7568_init(MachineState *machine)
         exit(1);
     }
 
-    memory_region_add_subregion(sysmem, memmap[SDRAM_0].base, machine->ram);
+    /*  Does not support IRAM/IROM remap at present  */
+    memory_region_init_ram(&sc8810->sdram_0, NULL, "sdram 0",
+                            256 * MiB, &error_abort);
+    memory_region_init_ram(&sc8810->sdram_1, NULL, "sdram 1",
+                            256 * MiB, &error_abort);
+    memory_region_init_ram(&sc8810->sdram_2, NULL, "sdram 2",
+                            256 * MiB, &error_abort);
+    memory_region_init_ram(&sc8810->iram_0, NULL, "iram 0",
+                            16 * KiB, &error_abort);
+    memory_region_init_ram(&sc8810->iram_1, NULL, "iram 1",
+                            16 * KiB, &error_abort);
+    memory_region_init_ram(&sc8810->iram_2, NULL, "iram 2",
+                            12 * KiB, &error_abort);
+    memory_region_add_subregion(get_system_memory(), memmap[SDRAM_0].base,
+                                &sc8810->sdram_0);
+    memory_region_add_subregion(get_system_memory(), memmap[SDRAM_1].base,
+                                &sc8810->sdram_1);
+    memory_region_add_subregion(get_system_memory(), memmap[SDRAM_2].base,
+                                &sc8810->sdram_2);
+    memory_region_add_subregion(get_system_memory(), memmap[IRAM_0].base,
+                                &sc8810->iram_0);
+    memory_region_add_subregion(get_system_memory(), memmap[IRAM_1].base,
+                                &sc8810->iram_1);
+    memory_region_add_subregion(get_system_memory(), memmap[IRAM_2].base,
+                                &sc8810->iram_2);
 
     memory_region_init_rom(irom, NULL, "sc8810.irom", memmap[IROM_0].size,
                            &error_fatal);
-    memory_region_add_subregion(sysmem, memmap[IROM_0].base, irom);
+    memory_region_add_subregion(get_system_memory(), memmap[IROM_0].base, irom);
     filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
     if (filename) {
         irom_size = load_image_targphys(filename, memmap[IROM_0].base,
@@ -80,7 +108,7 @@ static void s7568_machine_init(MachineClass *mc)
 {
     mc->desc = "Samsung Galaxy Trend GT-S7568";
     mc->default_cpu_type = ARM_CPU_TYPE_NAME("cortex-a8");
-    mc->default_ram_size = 1 * GiB; // Actually 768 MiB
+    mc->default_ram_size = 768 * MiB;
     mc->init = s7568_init;
     mc->block_default_type = IF_SD;
     mc->units_per_default_bus = 1;

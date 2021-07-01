@@ -12,6 +12,8 @@
 enum {
     SDRAM_0,
     IRAM_0,
+    IRAM_1,
+    IRAM_2,
     INTC,
     UART_0,
     PL310,
@@ -22,13 +24,15 @@ enum {
 
 static const MemMapEntry memmap[] = {
     [SDRAM_0] =              {          0, 0x10000000 },
-    [IRAM_0 ] =              { 0x40000000, 0x10000000 },
+    [IRAM_0 ] =              { 0x40000000,     0x4000 },
+    [IRAM_1 ] =              { 0x40004000,     0x4000 },
+    [IRAM_2 ] =              { 0x40008000,     0x3000 },
     [INTC   ] =              { 0x80003000,     0x1000 },
     [UART_0 ] =              { 0x84000000,  0x1000000 },
     [PL310  ] =              { 0xA2002000,     0x1000 },
     [SDRAM_1] =              { 0xc0000000, 0x10000000 },
     [SDRAM_2] =              { 0xe0000000, 0x10000000 },
-    [IROM_0 ] =              { 0xffff0000,    0x10000 },
+    [IROM_0 ] =              { 0xffff0000,     0x8000 },
 };
 
 #define TYPE_SPRD_SC8810 "sprd-sc8810"
@@ -41,6 +45,12 @@ struct SC8810State {
 
     ARMCPU cpu;
     SC8810INTCState intc;
+    MemoryRegion sdram_0;
+    MemoryRegion sdram_1;
+    MemoryRegion sdram_2;
+    MemoryRegion iram_0;
+    MemoryRegion iram_1;
+    MemoryRegion iram_2;
 };
 
 #endif // HW_ARM_SPRD_SC8810_H
