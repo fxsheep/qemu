@@ -39,11 +39,11 @@ static void sprd_sc8810_intc_set_irq(void *opaque, int irq, int level)
     SC8810INTCState *s = opaque;
 
     if (level) {
-        set_bit(irq - 1, (void *)&s->irq_raw_sts);
-        set_bit(irq - 1, (void *)&s->fiq_raw_sts);
+        set_bit(irq, (void *)&s->irq_raw_sts);
+        set_bit(irq, (void *)&s->fiq_raw_sts);
     } else {
-        clear_bit(irq - 1, (void *)&s->irq_raw_sts);
-        clear_bit(irq - 1, (void *)&s->fiq_raw_sts);
+        clear_bit(irq, (void *)&s->irq_raw_sts);
+        clear_bit(irq, (void *)&s->fiq_raw_sts);
     }
     sprd_sc8810_intc_update(s);
 }
