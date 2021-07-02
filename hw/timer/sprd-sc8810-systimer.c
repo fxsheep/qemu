@@ -13,6 +13,13 @@ enum {
     SYST_INT   = 0x08,
 };
 
+static void sprd_sc8810_systimer_update_irq(void *opaque)
+{
+    SC8810SYSTState *s = opaque;
+
+    qemu_set_irq(s->irq, s->raw_irq_status & s->irq_enable);
+}
+
 static uint32_t sprd_sc8810_systimer_get_value(void *opaque)
 {
     SC8810SYSTState *s = opaque;
@@ -24,9 +31,8 @@ static void sprd_sc8810_systimer_interrupt(void *opaque)
     SC8810SYSTState *s = opaque;
 
     s->raw_irq_status = 1;
-    if (s->irq_enable) {
-        qemu_irq_raise(s->irq);
-    }
+
+    sprd_sc8810_systimer_update_irq(s);
     timer_mod(s->timer, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 0x100000000);
 }
 
@@ -77,13 +83,11 @@ static void sprd_sc8810_systimer_write(void *opaque, hwaddr offset, uint64_t val
             //Interrupt unmask
             s->irq_enable = 1;
         }
-        else{
+        else {
             //Interrupt mask
             s->irq_enable = 0;
         }
-        if (!(s->raw_irq_status & s->irq_enable)) {
-            qemu_irq_lower(s->irq);
-        }
+        sprd_sc8810_systimer_update_irq(s);
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,

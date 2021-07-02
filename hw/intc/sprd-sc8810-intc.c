@@ -171,12 +171,12 @@ static void sprd_sc8810_intc_init(Object *obj)
     SC8810INTCState *s = SPRD_SC8810_INTC(obj);
     SysBusDevice *dev = SYS_BUS_DEVICE(obj);
 
-     qdev_init_gpio_in(DEVICE(dev), sprd_sc8810_intc_set_irq, SPRD_SC8810_INTC_NR);
-     sysbus_init_irq(dev, &s->parent_irq);
-     sysbus_init_irq(dev, &s->parent_fiq);
-     memory_region_init_io(&s->iomem, OBJECT(s), &sprd_sc8810_intc_ops, s,
-                           TYPE_SPRD_SC8810_INTC, 0x1000);
-     sysbus_init_mmio(dev, &s->iomem);
+    qdev_init_gpio_in(DEVICE(dev), sprd_sc8810_intc_set_irq, SPRD_SC8810_INTC_NR);
+    sysbus_init_irq(dev, &s->parent_irq);
+    sysbus_init_irq(dev, &s->parent_fiq);
+    memory_region_init_io(&s->iomem, OBJECT(s), &sprd_sc8810_intc_ops, s,
+                          TYPE_SPRD_SC8810_INTC, 0x1000);
+    sysbus_init_mmio(dev, &s->iomem);
 }
 
 static void sprd_sc8810_intc_reset(DeviceState *d)
