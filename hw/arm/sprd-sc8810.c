@@ -27,6 +27,8 @@ static void sc8810_init(Object *obj)
 
     object_initialize_child(obj, "adi", &s->adi, TYPE_SPRD_SC8810_ADI);
 
+    object_initialize_child(obj, "ahbc", &s->ahbc, TYPE_SPRD_SC8810_AHBC);
+
     pl011_create(memmap[UART_0].base, 0, serial_hd(0));
 }
 
@@ -73,6 +75,12 @@ static void sc8810_realize(DeviceState *dev, Error **errp)
     sysbusdev = SYS_BUS_DEVICE(&s->adi);
     sysbus_mmio_map(sysbusdev, 0, memmap[ADI].base);
     sysbus_connect_irq(sysbusdev, 0, qdev_get_gpio_in(dev, 25));
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->ahbc), errp)) {
+        return;
+    }
+    sysbusdev = SYS_BUS_DEVICE(&s->ahbc);
+    sysbus_mmio_map(sysbusdev, 0, memmap[AHBC].base);
 
     memory_region_init_ram(&s->iram_0, NULL, "iram 0",
                             16 * KiB, &error_abort);
