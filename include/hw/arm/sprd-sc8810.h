@@ -66,6 +66,7 @@ struct SC8810State {
     MemoryRegion iram_1;
     MemoryRegion iram_2;
     MemoryRegion dpmem;
+    MemoryRegion irom;
 };
 
 #endif // HW_ARM_SPRD_SC8810_H

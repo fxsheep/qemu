@@ -34,7 +34,6 @@ static void sc8810_realize(DeviceState *dev, Error **errp)
 {
     SC8810State *s = SPRD_SC8810(dev);
     SysBusDevice *sysbusdev;
-    MemoryRegion *irom = g_new(MemoryRegion, 1);
 
     if (!qdev_realize(DEVICE(&s->cpu), NULL, errp)) {
         return;
@@ -91,9 +90,9 @@ static void sc8810_realize(DeviceState *dev, Error **errp)
                                 &s->iram_2);
     memory_region_add_subregion(get_system_memory(), memmap[DPMEM].base,
                                 &s->dpmem);
-    memory_region_init_rom(irom, NULL, "sc8810.irom", memmap[IROM_0].size,
+    memory_region_init_rom(&s->irom, NULL, "sc8810.irom", memmap[IROM_0].size,
                            &error_fatal);
-    memory_region_add_subregion(get_system_memory(), memmap[IROM_0].base, irom);
+    memory_region_add_subregion(get_system_memory(), memmap[IROM_0].base, &s->irom);
 }
 
 static void sc8810_class_init(ObjectClass *oc, void *data)
