@@ -234,6 +234,7 @@ config SPRD_SC8810
     select SPRD_SC8810_INTC
     select SPRD_SC8810_GP_TIMER
     select SPRD_SC8810_SYS_TIMER
+    select SPRD_SC8810_ADI
 
 config STELLARIS
     bool

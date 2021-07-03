@@ -27,7 +27,6 @@ static void s7568_init(MachineState *machine)
     SC8810State *sc8810;
     Error *err = NULL;
 
-    MemoryRegion *irom = g_new(MemoryRegion, 1);
     int irom_size;
     char *filename;
 
@@ -58,28 +57,13 @@ static void s7568_init(MachineState *machine)
                             256 * MiB, &error_abort);
     memory_region_init_ram(&sc8810->sdram_2, NULL, "sdram 2",
                             256 * MiB, &error_abort);
-    memory_region_init_ram(&sc8810->iram_0, NULL, "iram 0",
-                            16 * KiB, &error_abort);
-    memory_region_init_ram(&sc8810->iram_1, NULL, "iram 1",
-                            16 * KiB, &error_abort);
-    memory_region_init_ram(&sc8810->iram_2, NULL, "iram 2",
-                            12 * KiB, &error_abort);
     memory_region_add_subregion(get_system_memory(), memmap[SDRAM_0].base,
                                 &sc8810->sdram_0);
     memory_region_add_subregion(get_system_memory(), memmap[SDRAM_1].base,
                                 &sc8810->sdram_1);
     memory_region_add_subregion(get_system_memory(), memmap[SDRAM_2].base,
                                 &sc8810->sdram_2);
-    memory_region_add_subregion(get_system_memory(), memmap[IRAM_0].base,
-                                &sc8810->iram_0);
-    memory_region_add_subregion(get_system_memory(), memmap[IRAM_1].base,
-                                &sc8810->iram_1);
-    memory_region_add_subregion(get_system_memory(), memmap[IRAM_2].base,
-                                &sc8810->iram_2);
 
-    memory_region_init_rom(irom, NULL, "sc8810.irom", memmap[IROM_0].size,
-                           &error_fatal);
-    memory_region_add_subregion(get_system_memory(), memmap[IROM_0].base, irom);
     filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
     if (filename) {
         irom_size = load_image_targphys(filename, memmap[IROM_0].base,

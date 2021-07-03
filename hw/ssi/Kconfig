@@ -9,6 +9,10 @@ config SIFIVE_SPI
 config SSI
     bool
 
+config SPRD_SC8810_ADI
+    bool
+    select SSI
+
 config XILINX_SPI
     bool
     select SSI

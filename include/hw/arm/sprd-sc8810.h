@@ -7,6 +7,7 @@
 #include "hw/intc/sprd-sc8810-intc.h"
 #include "hw/timer/sprd-sc8810-systimer.h"
 #include "hw/timer/sprd-sc8810-gptimer.h"
+#include "hw/ssi/sprd-sc8810-adi.h"
 
 #include "target/arm/cpu.h"
 #include "qom/object.h"
@@ -16,8 +17,10 @@ enum {
     IRAM_0,
     IRAM_1,
     IRAM_2,
+    DPMEM,
     INTC,
     GPT,
+    ADI,
     UART_0,
     SYST,
     PL310,
@@ -31,8 +34,10 @@ static const MemMapEntry memmap[] = {
     [IRAM_0 ] =              { 0x40000000,     0x4000 },
     [IRAM_1 ] =              { 0x40004000,     0x4000 },
     [IRAM_2 ] =              { 0x40008000,     0x3000 },
+    [DPMEM  ] =              { 0x50000000,     0x1000 },
     [INTC   ] =              { 0x80003000,     0x1000 },
     [GPT    ] =              { 0x81000000,     0x1000 },
+    [ADI    ] =              { 0x82000000,     0x0040 },
     [UART_0 ] =              { 0x84000000,  0x1000000 },
     [SYST   ] =              { 0x87003000,     0x1000 },
     [PL310  ] =              { 0xA2002000,     0x1000 },
@@ -53,12 +58,14 @@ struct SC8810State {
     SC8810INTCState intc;
     SC8810GPTState gptimer;
     SC8810SYSTState systimer;
+    SC8810ADIState adi;
     MemoryRegion sdram_0;
     MemoryRegion sdram_1;
     MemoryRegion sdram_2;
     MemoryRegion iram_0;
     MemoryRegion iram_1;
     MemoryRegion iram_2;
+    MemoryRegion dpmem;
 };
 
 #endif // HW_ARM_SPRD_SC8810_H

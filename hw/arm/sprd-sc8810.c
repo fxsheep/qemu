@@ -1,4 +1,5 @@
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "exec/address-spaces.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
@@ -24,6 +25,8 @@ static void sc8810_init(Object *obj)
 
     object_initialize_child(obj, "systimer", &s->systimer, TYPE_SPRD_SC8810_SYS_TIMER);
 
+    object_initialize_child(obj, "adi", &s->adi, TYPE_SPRD_SC8810_ADI);
+
     pl011_create(memmap[UART_0].base, 0, serial_hd(0));
 }
 
@@ -31,6 +34,7 @@ static void sc8810_realize(DeviceState *dev, Error **errp)
 {
     SC8810State *s = SPRD_SC8810(dev);
     SysBusDevice *sysbusdev;
+    MemoryRegion *irom = g_new(MemoryRegion, 1);
 
     if (!qdev_realize(DEVICE(&s->cpu), NULL, errp)) {
         return;
@@ -63,6 +67,33 @@ static void sc8810_realize(DeviceState *dev, Error **errp)
     sysbus_connect_irq(sysbusdev, 0, qdev_get_gpio_in(dev, 17));
 
     sysbus_create_simple("l2x0", memmap[PL310].base, NULL);
+
+    if (!sysbus_realize(SYS_BUS_DEVICE(&s->adi), errp)) {
+        return;
+    }
+    sysbusdev = SYS_BUS_DEVICE(&s->adi);
+    sysbus_mmio_map(sysbusdev, 0, memmap[ADI].base);
+    sysbus_connect_irq(sysbusdev, 0, qdev_get_gpio_in(dev, 25));
+
+    memory_region_init_ram(&s->iram_0, NULL, "iram 0",
+                            16 * KiB, &error_abort);
+    memory_region_init_ram(&s->iram_1, NULL, "iram 1",
+                            16 * KiB, &error_abort);
+    memory_region_init_ram(&s->iram_2, NULL, "iram 2",
+                            12 * KiB, &error_abort);
+    memory_region_init_ram(&s->dpmem, NULL, "dpmem",
+                            4 * KiB, &error_abort);
+    memory_region_add_subregion(get_system_memory(), memmap[IRAM_0].base,
+                                &s->iram_0);
+    memory_region_add_subregion(get_system_memory(), memmap[IRAM_1].base,
+                                &s->iram_1);
+    memory_region_add_subregion(get_system_memory(), memmap[IRAM_2].base,
+                                &s->iram_2);
+    memory_region_add_subregion(get_system_memory(), memmap[DPMEM].base,
+                                &s->dpmem);
+    memory_region_init_rom(irom, NULL, "sc8810.irom", memmap[IROM_0].size,
+                           &error_fatal);
+    memory_region_add_subregion(get_system_memory(), memmap[IROM_0].base, irom);
 }
 
 static void sc8810_class_init(ObjectClass *oc, void *data)
